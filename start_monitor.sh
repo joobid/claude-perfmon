@@ -76,7 +76,7 @@ if kill -0 "$SERVER_PID" 2>/dev/null; then
     echo -e "${GREEN}✓${NC} Server PID    : $SERVER_PID"
     echo ""
     echo -e "${GREEN}✓ Monitoring is running.${NC}"
-    echo -e "  First sample in ~${INTERVAL}s (sampler.py log → .sampler.log)"
+    echo -e "  Initial sample in ~3s, then every ${INTERVAL}s (log → .sampler.log)"
     echo -e "  Dashboard → ${YELLOW}http://127.0.0.1:${PORT}${NC}"
     echo -e "  To stop → ${YELLOW}./stop_monitor.sh${NC}"
     echo ""

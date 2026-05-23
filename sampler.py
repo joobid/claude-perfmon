@@ -29,46 +29,58 @@ signal.signal(signal.SIGINT,  _stop)
 
 print(f'[sampler] Starting: {samples} samples × {interval}s → {log_file}', flush=True)
 
-count = 0
-while running and count < samples:
-    t0 = time.time()
+
+def _run_top(wait: int, timeout: int) -> str | None:
+    """Run `top -l 2 -s <wait>` and return the real delta block, or None on failure."""
     try:
-        # top -l 2 -s <wait>:
-        #   block 0 = init sample  (stale CPU deltas — discard)
-        #   block 1 = real delta measurement over `wait` seconds
-        wait = max(1, interval - 1)
         result = subprocess.run(
             ['top', '-l', '2', '-s', str(wait), '-n', '9999'],
-            capture_output=True, text=True, timeout=interval + 15
+            capture_output=True, text=True, timeout=timeout
         )
-        out = result.stdout
-
-        # Split on lines starting with "Processes:" (same logic as server.py)
         blocks = [
-            b for b in re.split(r'(?=^Processes:)', out, flags=re.MULTILINE)
+            b for b in re.split(r'(?=^Processes:)', result.stdout, flags=re.MULTILINE)
             if b.strip() and 'Processes:' in b
         ]
-
         if len(blocks) >= 2:
-            # Write only the second (real delta) block
-            block_to_write = blocks[-1]
-        elif blocks:
-            # Fallback: only one block found, write it anyway
-            block_to_write = blocks[0]
-        else:
-            print(f'[sampler] WARNING: no Processes: block in top output (sample {count+1})', flush=True)
-            block_to_write = None
-
-        if block_to_write:
-            with open(log_file, 'a') as f:
-                f.write(block_to_write)
-            count += 1
-            print(f'[sampler] {count}/{samples}', flush=True)
-
+            return blocks[-1]
+        if blocks:
+            return blocks[0]
     except subprocess.TimeoutExpired:
-        print(f'[sampler] WARNING: top timed out on sample {count + 1}', flush=True)
+        print('[sampler] WARNING: top timed out', flush=True)
     except Exception as e:
         print(f'[sampler] ERROR: {e}', flush=True)
+    return None
+
+
+# ── Initial quick sample — shows data immediately instead of waiting the full interval ──
+print('[sampler] Taking initial sample (quick)...', flush=True)
+block = _run_top(wait=1, timeout=15)
+count = 0
+if block:
+    with open(log_file, 'a') as f:
+        f.write(block)
+    count = 1
+    print('[sampler] initial/1 written', flush=True)
+else:
+    print('[sampler] WARNING: initial sample failed — will retry in main loop', flush=True)
+
+# ── Main sampling loop ─────────────────────────────────────────────────────────
+while running and count < samples:
+    t0 = time.time()
+
+    # top -l 2 -s <wait>:
+    #   block 0 = init sample  (stale CPU deltas — discard)
+    #   block 1 = real delta measurement over `wait` seconds
+    wait = max(1, interval - 1)
+    block = _run_top(wait=wait, timeout=interval + 15)
+
+    if block:
+        with open(log_file, 'a') as f:
+            f.write(block)
+        count += 1
+        print(f'[sampler] {count}/{samples}', flush=True)
+    else:
+        print(f'[sampler] WARNING: no Processes: block in top output (sample {count+1})', flush=True)
 
     # Sleep any remaining time in this interval
     elapsed = time.time() - t0
