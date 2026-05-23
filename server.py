@@ -63,16 +63,16 @@ print(f'[server] Total RAM detected: {TOTAL_RAM_GB:.2f} GB' if TOTAL_RAM_GB else
 
 def get_live_ps_procs() -> list:
     """
-    Returns a real-time list of all processes whose command contains 'claude'
-    (case-insensitive), queried directly from ps ax at request time.
+    Real-time snapshot of all claude-named processes via ps.
 
-    This supplements top-file parsing: top samples every N seconds, so rapidly
-    appearing/disappearing processes (like stress workers) may be missed between
-    samples.  ps gives the instantaneous view the dashboard needs.
+    Uses 'command=' (full argv[0] + args) instead of 'comm=' (p_comm, max 15
+    chars from executable path).  This catches both:
+      • Binaries named 'claude-worker' via hard-link/copy (p_comm = claude-worker)
+      • Processes renamed via exec -a / setproctitle (argv[0] = claude-worker-N)
     """
     try:
         result = subprocess.run(
-            ['ps', 'ax', '-o', 'pid=,pcpu=,rss=,comm='],
+            ['ps', 'ax', '-o', 'pid=,pcpu=,rss=,command='],
             capture_output=True, text=True, timeout=3
         )
         procs = []
@@ -80,25 +80,34 @@ def get_live_ps_procs() -> list:
             parts = line.split(None, 3)
             if len(parts) < 4:
                 continue
-            cmd_full = parts[3].strip()
-            cmd_base = os.path.basename(cmd_full)  # strip path
-            if not is_claude_process(cmd_full) and not is_claude_process(cmd_base):
+            # 'command=' gives full argv including args; argv[0] is the first token
+            argv0     = parts[3].split()[0] if parts[3].strip() else ''
+            argv0_base = os.path.basename(argv0)   # strip leading path
+
+            full_cmd = parts[3] if len(parts) > 3 else ''
+            is_stress_worker = '.claude-stress' in full_cmd
+            if not is_claude_process(argv0_base) and not is_stress_worker:
                 continue
             try:
                 pid    = parts[0].strip()
                 cpu    = float(parts[1].strip())
                 rss_kb = int(parts[2].strip())
                 mem_gb = round(rss_kb / 1024 ** 2, 3)
-                # Human-readable RAM label
                 if rss_kb >= 1024 * 1024:
                     mem_str = f'{rss_kb / 1024 / 1024:.1f}G'
                 elif rss_kb >= 1024:
                     mem_str = f'{rss_kb // 1024}M'
                 else:
                     mem_str = f'{rss_kb}K'
+                # Strip leading dot from hidden-file names (e.g. .claude-worker → claude-worker)
+                # If running as plain python3 with stress script, label it as claude-worker
+                if is_stress_worker and not is_claude_process(argv0_base):
+                    display_name = 'claude-worker'
+                else:
+                    display_name = argv0_base.lstrip('.')[:30]
                 procs.append({
                     'pid':     pid,
-                    'cmd':     cmd_base[:30],
+                    'cmd':     display_name,
                     'cpu':     cpu,
                     'time':    '-',
                     'mem_gb':  mem_gb,

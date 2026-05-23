@@ -162,6 +162,40 @@
   .br{height:4px;border-radius:2px;background:var(--claude);min-width:2px}
   .tm{font-family:monospace;font-size:9px;color:var(--muted)}
   .empty{padding:16px;text-align:center;color:var(--muted);font-size:11px}
+
+  /* ════════════════════════════════════════
+     INFO TOOLTIP  (hover on chart titles)
+  ════════════════════════════════════════ */
+  .info-icon{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:14px;height:14px;border-radius:50%;
+    background:var(--border);color:var(--muted);
+    font-size:8px;font-weight:800;font-style:normal;
+    cursor:help;margin-left:5px;flex-shrink:0;
+    transition:background .15s,color .15s;
+    user-select:none;
+  }
+  .info-icon:hover{background:var(--claude);color:#fff}
+
+  /* Floating tooltip card — appended to <body>, position:fixed via JS */
+  .chart-tip{
+    position:fixed;z-index:9999;pointer-events:none;
+    background:var(--sur2);border:1px solid var(--border);
+    border-radius:9px;padding:11px 14px;max-width:270px;
+    font-size:11px;color:var(--text);line-height:1.6;
+    box-shadow:0 6px 20px rgba(0,0,0,.55);
+    display:none;
+  }
+  .chart-tip b{
+    display:block;font-size:12px;font-weight:700;
+    color:var(--claude);margin-bottom:5px;
+  }
+  .chart-tip .tip-tag{
+    display:inline-block;margin-top:7px;
+    font-size:9px;font-weight:600;letter-spacing:.3px;
+    text-transform:uppercase;color:var(--muted);
+    border-top:1px solid var(--border);padding-top:5px;width:100%;
+  }
 </style>
 </head>
 <body>
@@ -188,7 +222,9 @@
   <!-- CPU gauge -->
   <div class="gauge">
     <div class="gauge-top">
-      <div class="gauge-icon">🖥 CPU</div>
+      <div class="gauge-icon" style="display:flex;align-items:center;gap:4px">🖥 CPU
+        <i class="info-icon" data-tip="cpu-gauge">ℹ</i>
+      </div>
       <div class="gauge-nums">
         <span class="gv-claude" id="gc-claude">—</span><span class="gv-unit">%</span>
         <span class="gv-sep">/</span>
@@ -212,7 +248,9 @@
   <!-- RAM gauge -->
   <div class="gauge">
     <div class="gauge-top">
-      <div class="gauge-icon">🧠 RAM</div>
+      <div class="gauge-icon" style="display:flex;align-items:center;gap:4px">🧠 RAM
+        <i class="info-icon" data-tip="ram-gauge">ℹ</i>
+      </div>
       <div class="gauge-nums">
         <span class="gv-claude" id="gm-claude">—</span><span class="gv-unit">GB</span>
         <span class="gv-sep">/</span>
@@ -240,31 +278,31 @@
 
   <!-- CPU stacked -->
   <div class="card" style="grid-column:1;grid-row:1">
-    <div class="ch"><span class="ct">CPU over time</span><span class="cs">% — stacked</span></div>
+    <div class="ch"><span class="ct">CPU over time</span><i class="info-icon" data-tip="cpu-time">ℹ</i><span class="cs">% — stacked</span></div>
     <div class="cb"><canvas id="cpuChart"></canvas></div>
   </div>
 
   <!-- RAM stacked -->
   <div class="card" style="grid-column:1;grid-row:2">
-    <div class="ch"><span class="ct">RAM over time</span><span class="cs">GB — stacked</span></div>
+    <div class="ch"><span class="ct">RAM over time</span><i class="info-icon" data-tip="ram-time">ℹ</i><span class="cs">GB — stacked</span></div>
     <div class="cb"><canvas id="memChart"></canvas></div>
   </div>
 
   <!-- Proc count -->
   <div class="card" style="grid-column:2;grid-row:1">
-    <div class="ch"><span class="ct">Claude processes</span><span class="cs">count per sample</span></div>
+    <div class="ch"><span class="ct">Claude processes</span><i class="info-icon" data-tip="proc-count">ℹ</i><span class="cs">count per sample</span></div>
     <div class="cb"><canvas id="procChart"></canvas></div>
   </div>
 
   <!-- Load avg -->
   <div class="card" style="grid-column:2;grid-row:2">
-    <div class="ch"><span class="ct">Load Average</span><span class="cs">1m · 5m · 15m</span></div>
+    <div class="ch"><span class="ct">Load Average</span><i class="info-icon" data-tip="load-avg">ℹ</i><span class="cs">1m · 5m · 15m</span></div>
     <div class="cb"><canvas id="loadChart"></canvas></div>
   </div>
 
   <!-- Donut -->
   <div class="card" style="grid-column:3;grid-row:1">
-    <div class="ch"><span class="ct">CPU distribution</span><span class="cs">latest sample</span></div>
+    <div class="ch"><span class="ct">CPU distribution</span><i class="info-icon" data-tip="cpu-donut">ℹ</i><span class="cs">latest sample</span></div>
     <div class="donut-b">
       <canvas id="donutChart"></canvas>
       <div class="donut-c">
@@ -277,7 +315,7 @@
   <!-- Process table -->
   <div class="card" style="grid-column:3;grid-row:2">
     <div class="ch" style="justify-content:space-between;display:flex">
-      <span class="ct">✦ Claude Processes</span>
+      <span class="ct">✦ Claude Processes</span><i class="info-icon" data-tip="proc-table">ℹ</i>
       <span class="cs" id="tbl-meta"></span>
     </div>
     <div class="tbl-b" id="tbl-body">
@@ -353,13 +391,7 @@ const procChart = new Chart(document.getElementById('procChart'),{
     plugins:{
       legend:{display:false},
       tooltip:TT(''),
-      datalabels:{
-        anchor:'end', align:'end',
-        color:'rgba(255,255,255,.7)',
-        font:{size:9, weight:'600'},
-        formatter: v => v > 0 ? v : '',
-        offset: 2,
-      }
+      datalabels:{ display:false }
     },
     scales:{
       x: AX.x,
@@ -384,7 +416,13 @@ const loadChart = new Chart(document.getElementById('loadChart'),{
     responsive:true, maintainAspectRatio:false, animation:{duration:300},
     interaction:{mode:'index',intersect:false},
     plugins:{ legend:LEGEND, tooltip:TT(''), datalabels:{display:false} },
-    scales:{ x:AX.x, y:{...AX.y, stacked:false} }
+    scales:{
+      x: AX.x,
+      y: {
+        ...AX.y, stacked:false,
+        title:{ display:true, text:'processes in run queue', color:'#484f58', font:{size:9} }
+      }
+    }
   }
 });
 
@@ -548,6 +586,89 @@ setInterval(()=>{
   if(--secs<=0){ secs=REFRESH_MS/1000; loadData(); }
 },1000);
 loadData();
+
+// ── Info tooltips ──────────────────────────────────────────────────────────────
+const TIPS = {
+  'cpu-gauge': `<b>CPU — gauge</b>
+    Instantaneous snapshot of the latest sample.
+    The large number is the combined CPU% of all Claude processes.
+    The bar shows how that compares to the rest of the system and to idle time.
+    <span class="tip-tag">source: top delta sample</span>`,
+
+  'ram-gauge': `<b>RAM — gauge</b>
+    Physical memory (RSS) used by all Claude processes right now.
+    The bar splits total installed RAM into: Claude · other processes · free.
+    Total RAM is read from <code>sysctl hw.memsize</code> — always accurate.
+    <span class="tip-tag">source: top + sysctl</span>`,
+
+  'cpu-time': `<b>CPU over time</b>
+    Stacked area chart of CPU usage over the session.
+    <b style="color:var(--claude)">Orange</b> = Claude processes combined.
+    <b style="color:var(--other)">Blue</b> = all other processes.
+    The gap to 100% is idle CPU. Each point is one top sample.
+    <span class="tip-tag">source: top samples (every ${()=>document.getElementById('countdown')?'N':'N'}s)</span>`,
+
+  'ram-time': `<b>RAM over time</b>
+    Stacked area chart of physical memory usage in GB.
+    <b style="color:var(--claude)">Orange</b> = RAM held by Claude processes.
+    <b style="color:var(--other)">Blue</b> = RAM used by everything else.
+    The combined height is total used RAM; space above is free.
+    <span class="tip-tag">source: top samples</span>`,
+
+  'proc-count': `<b>Claude processes — count</b>
+    Number of processes whose name contains "claude" detected at each sample.
+    During normal use this is 1 (the active Claude session).
+    During a stress test it rises to the number of claude-worker processes running.
+    <span class="tip-tag">source: top samples (historical) + ps live (latest)</span>`,
+
+  'load-avg': `<b>Load Average</b>
+    Average number of processes waiting for or using CPU, over three windows:
+    <b>1 m</b> (most reactive) · <b>5 m</b> · <b>15 m</b> (trend).
+    A value equal to your core count means all cores are saturated.
+    Values below your core count mean the system is not overloaded.
+    <span class="tip-tag">source: top "Load Avg:" line</span>`,
+
+  'cpu-donut': `<b>CPU distribution</b>
+    Proportional breakdown of total CPU for the <em>latest sample only</em>.
+    <b style="color:var(--claude)">Claude</b> · <b style="color:var(--other)">Others</b> · <b style="color:#4d5a6e">Idle</b>.
+    The centre shows Claude's raw CPU percentage.
+    Hover the segments for exact values.
+    <span class="tip-tag">source: latest top sample</span>`,
+
+  'proc-table': `<b>Claude Processes — table</b>
+    Real-time list of every process whose name contains "claude".
+    Updated from <code>ps ax</code> on <em>every dashboard refresh</em> —
+    not limited to the last top sample interval.
+    Shows PID, process name, CPU%, and resident memory (RSS).
+    <span class="tip-tag">source: ps ax — live</span>`,
+};
+
+(function initTips(){
+  const tip = document.createElement('div');
+  tip.className = 'chart-tip';
+  document.body.appendChild(tip);
+
+  function pos(e){
+    const W=innerWidth, H=innerHeight;
+    const tw=tip.offsetWidth||270, th=tip.offsetHeight||120;
+    let x=e.clientX+14, y=e.clientY+14;
+    if(x+tw>W-8) x=e.clientX-tw-10;
+    if(y+th>H-8) y=e.clientY-th-10;
+    tip.style.left=x+'px'; tip.style.top=y+'px';
+  }
+
+  document.querySelectorAll('[data-tip]').forEach(el=>{
+    el.addEventListener('mouseenter', e=>{
+      const html = TIPS[el.dataset.tip];
+      if(!html) return;
+      tip.innerHTML = html;
+      tip.style.display='block';
+      pos(e);
+    });
+    el.addEventListener('mousemove', pos);
+    el.addEventListener('mouseleave', ()=>{ tip.style.display='none'; });
+  });
+})();
 </script>
 </body>
 </html>

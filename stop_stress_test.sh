@@ -25,4 +25,8 @@ while IFS= read -r pid; do
 done < "$PID_FILE"
 
 rm -f "$PID_FILE"
+
+# Remove the claude-worker binary created at startup
+rm -f "$SCRIPT_DIR/claude-worker" 2>/dev/null
+
 echo -e "${GREEN}✓ Stress test stopped.${NC}"
