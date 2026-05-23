@@ -1,0 +1,13 @@
+#!/bin/zsh
+# .claude-stress-launcher
+# Launches python3 with process name $1 so it appears as "claude-worker-N"
+# in top/ps — visible in the Claude Performance Monitor dashboard.
+#
+# Usage: ./.claude-stress-launcher <process-name> <script.py> [args...]
+#
+# How it works: zsh's `exec -a name cmd` replaces this process with python3,
+# setting argv[0] = name → top/ps show that name in the COMMAND column.
+
+WORKER_NAME="${1:-claude-worker}"
+shift
+exec -a "$WORKER_NAME" python3 "$@"

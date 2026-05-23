@@ -10,3 +10,7 @@ __pycache__/
 .monitor_pids
 .current_interval
 .sampler.log
+
+# Stress test worker scripts (generated at runtime, committed for reference)
+# .claude-stress-launcher  ← kept in repo (needed by start_stress_test.sh)
+# .claude-stress.py        ← kept in repo (needed by start_stress_test.sh)

@@ -27,7 +27,8 @@ def _get_sample_interval() -> int:
     except Exception:
         return 60
 
-# Keywords to identify Claude processes (case-insensitive)
+# Keywords to identify Claude processes (case-insensitive).
+# Matches: claude, Claude, claude-worker-N, claude-stress, etc.
 CLAUDE_KEYWORDS = ['claude']
 
 
@@ -56,6 +57,59 @@ def _get_total_ram_gb() -> Optional[float]:
 TOTAL_RAM_GB: Optional[float] = _get_total_ram_gb()
 print(f'[server] Total RAM detected: {TOTAL_RAM_GB:.2f} GB' if TOTAL_RAM_GB else
       '[server] WARNING: could not detect total system RAM')
+
+
+# ── Real-time process snapshot via ps ─────────────────────────────────────────
+
+def get_live_ps_procs() -> list:
+    """
+    Returns a real-time list of all processes whose command contains 'claude'
+    (case-insensitive), queried directly from ps ax at request time.
+
+    This supplements top-file parsing: top samples every N seconds, so rapidly
+    appearing/disappearing processes (like stress workers) may be missed between
+    samples.  ps gives the instantaneous view the dashboard needs.
+    """
+    try:
+        result = subprocess.run(
+            ['ps', 'ax', '-o', 'pid=,pcpu=,rss=,comm='],
+            capture_output=True, text=True, timeout=3
+        )
+        procs = []
+        for line in result.stdout.splitlines():
+            parts = line.split(None, 3)
+            if len(parts) < 4:
+                continue
+            cmd_full = parts[3].strip()
+            cmd_base = os.path.basename(cmd_full)  # strip path
+            if not is_claude_process(cmd_full) and not is_claude_process(cmd_base):
+                continue
+            try:
+                pid    = parts[0].strip()
+                cpu    = float(parts[1].strip())
+                rss_kb = int(parts[2].strip())
+                mem_gb = round(rss_kb / 1024 ** 2, 3)
+                # Human-readable RAM label
+                if rss_kb >= 1024 * 1024:
+                    mem_str = f'{rss_kb / 1024 / 1024:.1f}G'
+                elif rss_kb >= 1024:
+                    mem_str = f'{rss_kb // 1024}M'
+                else:
+                    mem_str = f'{rss_kb}K'
+                procs.append({
+                    'pid':     pid,
+                    'cmd':     cmd_base[:30],
+                    'cpu':     cpu,
+                    'time':    '-',
+                    'mem_gb':  mem_gb,
+                    'mem_str': mem_str,
+                })
+            except (ValueError, IndexError):
+                pass
+        return sorted(procs, key=lambda x: x['cpu'], reverse=True)
+    except Exception as e:
+        print(f'[server] WARNING: ps query failed: {e}')
+        return []
 
 
 # ── Unit conversion utilities ──────────────────────────────────────────────────────────
@@ -177,22 +231,18 @@ def parse_top_output(filepath: str) -> dict:
             # Could not parse "used"; at least publish total
             sample['mem_total_gb'] = round(total_gb, 2)
 
-        # ── Parse ALL processes ──────────────────────────────────────────────────
-        procs_section = re.search(
-            r'Disks:.*?\n\n(.*?)(?:\Z|\n\nProcesses:)', block, re.DOTALL)
-
+        # ── Parse ALL processes ───────────────────────────────────────────────
+        # Locate the PID header line directly — more robust than relying on
+        # the "Disks:" section separator which can vary between macOS versions.
         all_procs    = []
         claude_procs = []
 
-        if procs_section:
-            lines = procs_section.group(1).strip().splitlines()
-            header_passed = False
+        header_match = re.search(r'^\s*PID\s+COMMAND', block, re.MULTILINE | re.IGNORECASE)
+        if header_match:
+            lines = block[header_match.end():].strip().splitlines()
             for line in lines:
-                if re.match(r'\s*PID\s+COMMAND', line, re.IGNORECASE):
-                    header_passed = True
-                    continue
-                if not header_passed or not line.strip():
-                    continue
+                if not line.strip():
+                    break   # blank line signals end of process table
                 parts = line.split()
                 if len(parts) < 3:
                     continue
@@ -205,11 +255,11 @@ def parse_top_output(filepath: str) -> dict:
                     mem_gb  = parse_mem_value(mem_str)
 
                     proc_entry = {
-                        'pid':    pid,
-                        'cmd':    cmd[:30],
-                        'cpu':    cpu_val,
-                        'time':   time_s,
-                        'mem_gb': round(mem_gb, 3),
+                        'pid':     pid,
+                        'cmd':     cmd[:30],
+                        'cpu':     cpu_val,
+                        'time':    time_s,
+                        'mem_gb':  round(mem_gb, 3),
                         'mem_str': mem_str,
                     }
                     all_procs.append(proc_entry)
@@ -269,6 +319,27 @@ class MonitorHandler(http.server.SimpleHTTPRequestHandler):
     def _handle(self):
         if self.path.startswith('/data'):
             data = parse_top_output(LOG_FILE)
+
+            # ── Augment the latest sample with a real-time ps snapshot ────────
+            # top samples every N seconds; ps gives the instantaneous picture.
+            # We replace claude_procs in the last sample so the process table
+            # always reflects what is actually running right now.
+            if data.get('samples'):
+                live = get_live_ps_procs()
+                last = data['samples'][-1]
+                # Use live data if it found something, OR if top found nothing
+                if live or not last.get('claude_procs'):
+                    last['claude_procs']      = live
+                    last['claude_proc_count'] = len(live)
+                    last['claude_cpu_total']  = round(sum(p['cpu']    for p in live), 2)
+                    last['claude_mem_gb']     = round(sum(p['mem_gb'] for p in live), 3)
+                    if last.get('cpu_used', 0) > 0:
+                        last['claude_cpu_pct_of_system'] = round(
+                            last['claude_cpu_total'] / last['cpu_used'] * 100, 1)
+                    if last.get('mem_total_gb', 0) > 0:
+                        last['claude_mem_pct_of_system'] = round(
+                            last['claude_mem_gb'] / last['mem_total_gb'] * 100, 1)
+
             body = json.dumps(data).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
