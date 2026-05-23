@@ -25,12 +25,13 @@ single-page HTML dashboard — no external dependencies beyond Python 3.
 ```
 start_monitor.sh  [samples] [interval_s]
   │
-  ├─ sampler.py  → ~/informe_cpu_YYMMDD_HHMMSS.txt  (top-based log)
+  ├─ sampler.py  → logs/informe_cpu_YYMMDD_HHMMSS.txt  (top-based log)
   │
   └─ server.py   → http://127.0.0.1:8765
        │
-       ├─ GET /data   → JSON (parsed log + live ps snapshot for latest sample)
-       └─ GET /       → monitor.html  (dashboard, polls /data every N s)
+       ├─ GET /data       → JSON (parsed log + live ps snapshot for latest sample)
+       ├─ GET /export.csv → CSV download with all collected samples
+       └─ GET /           → monitor.html  (dashboard, polls /data every N s)
 ```
 
 | File | Purpose |
@@ -102,6 +103,26 @@ The dashboard is divided into three rows:
 - **Load Average** (centre): System load over 1 min / 5 min / 15 min. A value of 1.0 means one CPU core is fully busy; values above your core count indicate queueing.
 - **Claude Processes** (right): Live table — every `claude-*` subprocess at this instant, with PID, name, CPU %, and RAM. Refreshed from `ps ax` on every poll, so it captures short-lived processes that `top` might miss.
 
+**CSV export**
+
+The header bar includes a **↓ CSV** button. Clicking it downloads a file named `claude_perfmon_YYYY-MM-DD-HH-MM-SS.csv` with one row per collected sample and the following columns:
+
+| Column | Description |
+|---|---|
+| `timestamp` | Date and time of the sample |
+| `cpu_used_pct` | Total CPU used (%) |
+| `cpu_user_pct`, `cpu_sys_pct`, `cpu_idle_pct` | CPU breakdown |
+| `mem_used_gb`, `mem_free_gb`, `mem_total_gb`, `mem_used_pct` | System RAM |
+| `load_1m`, `load_5m`, `load_15m` | Load average |
+| `proc_total`, `proc_running` | System process counts |
+| `claude_proc_count` | Number of Claude subprocesses |
+| `claude_cpu_pct` | Claude total CPU (%) |
+| `claude_cpu_pct_of_system` | Claude as % of active CPU |
+| `claude_mem_gb` | Claude RAM (GB) |
+| `claude_mem_pct_of_system` | Claude as % of total RAM |
+
+The same data is also available directly at `http://127.0.0.1:8765/export.csv`.
+
 **Quick reference table**
 
 | Panel | What it shows |
@@ -138,7 +159,7 @@ what is running at the moment you look at it, not what `top` captured N seconds 
   only the second.
 - This avoids the drift problems that affect a single long `top -l <N>` session under
   `nohup`.
-- Each block is appended to `~/informe_cpu_YYMMDD_HHMMSS.txt`.
+- Each block is appended to `logs/informe_cpu_YYMMDD_HHMMSS.txt` inside the repo directory. The `logs/` folder is listed in `.gitignore` so log files are never committed.
 
 `server.py` splits the file on `Processes:` headers, parses each block, and
 aggregates metrics for any process whose name contains `"claude"` (case-insensitive).
@@ -180,7 +201,7 @@ file — browsers block local `fetch()` calls from `file://` URLs.
 **RAM shows `—` or "Others" shows 0 GB**
 Check that `server.py` can read the `PhysMem:` line from the log:
 ```bash
-grep 'PhysMem' ~/informe_cpu_*.txt | tail -3
+grep 'PhysMem' logs/informe_cpu_*.txt | tail -3
 ```
 If it prints nothing, your macOS version may use a different field name — open an issue.
 
@@ -219,8 +240,9 @@ Create `start_monitor_linux.sh`:
 SAMPLES="${1:-360}"
 INTERVAL="${2:-60}"
 TIMESTAMP=$(date +%d%m%y_%H%M%S)
-LOG_FILE="$HOME/informe_cpu_${TIMESTAMP}.txt"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+mkdir -p "$SCRIPT_DIR/logs"
+LOG_FILE="$SCRIPT_DIR/logs/informe_cpu_${TIMESTAMP}.txt"
 
 nohup top -b -n "$SAMPLES" -d "$INTERVAL" > "$LOG_FILE" 2>/dev/null &
 echo "$LOG_FILE" > "$SCRIPT_DIR/.current_log"
