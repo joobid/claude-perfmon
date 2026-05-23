@@ -58,17 +58,17 @@ git clone https://github.com/joobid/claude-perfmon.git
 cd claude-perfmon
 chmod +x *.sh
 
-./start_monitor.sh          # 360 samples × 60 s = 6 h (default)
+./start_monitor.sh          # 960 samples × 30 s = 8 h (default)
 ```
 
 The browser opens automatically at `http://127.0.0.1:8765`.
-The first data point appears after the first interval (60 s by default).
+The first data point appears within ~3 seconds (initial quick sample).
 
 **Customise the sampling interval:**
 
 ```bash
-./start_monitor.sh              # 360 × 60 s = 6 h  (default)
-./start_monitor.sh 720 30       # 720 × 30 s = 6 h, finer resolution
+./start_monitor.sh              # 960 × 30 s = 8 h  (default)
+./start_monitor.sh 720 10       # 720 × 10 s = 2 h, fine resolution
 ./start_monitor.sh 20 10        # 20  × 10 s ≈ 3 min, quick test
 ```
 
@@ -171,8 +171,8 @@ Total RAM is read from `sysctl hw.memsize` at startup so it is always accurate.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `samples` | `360` | Number of top samples to collect (`start_monitor.sh` arg 1) |
-| `interval_seconds` | `60` | Seconds between samples (`start_monitor.sh` arg 2) |
+| `samples` | `960` | Number of top samples to collect (`start_monitor.sh` arg 1) |
+| `interval_seconds` | `30` | Seconds between samples (`start_monitor.sh` arg 2) |
 | `PORT` | `8765` | HTTP port for the dashboard (edit in `server.py`) |
 | `CLAUDE_KEYWORDS` | `['claude']` | Process name filters (edit in `server.py`) |
 
@@ -180,8 +180,8 @@ Total RAM is read from `sysctl hw.memsize` at startup so it is always accurate.
 
 | Use case | Command | Coverage |
 |---|---|---|
-| Normal monitoring (default) | `./start_monitor.sh` | 360 × 60 s = 6 h |
-| Fine-grained monitoring | `./start_monitor.sh 720 30` | 720 × 30 s = 6 h |
+| Normal monitoring (default) | `./start_monitor.sh` | 960 × 30 s = 8 h |
+| Fine-grained monitoring | `./start_monitor.sh 720 10` | 720 × 10 s = 2 h |
 | Custom | `./start_monitor.sh <N> <S>` | N × S seconds total |
 
 To also track other processes (e.g. `node` or `python`), edit `server.py`:
@@ -237,8 +237,8 @@ Create `start_monitor_linux.sh`:
 
 ```bash
 #!/bin/bash
-SAMPLES="${1:-360}"
-INTERVAL="${2:-60}"
+SAMPLES="${1:-960}"
+INTERVAL="${2:-30}"
 TIMESTAMP=$(date +%d%m%y_%H%M%S)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$SCRIPT_DIR/logs"

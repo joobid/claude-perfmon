@@ -13,8 +13,8 @@
 #   ./start_monitor.sh 720 5        # 720 x  5 s = 1 h, stress-test mode
 # =============================================================================
 
-SAMPLES="${1:-360}"
-INTERVAL="${2:-60}"
+SAMPLES="${1:-960}"
+INTERVAL="${2:-30}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP=$(date +%d%m%y_%H%M%S)
 LOG_DIR="$SCRIPT_DIR/logs"
