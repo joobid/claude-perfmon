@@ -219,20 +219,29 @@ def parse_top_output(filepath: str) -> dict:
                     used_gb = candidate
                     break
 
-        # If text parsing fails, derive "used" as total − free
+        # Parse "unused" directly from the PhysMem line — this is always accurate.
+        # "top" rounds the "used" figure (e.g. "15G" instead of "15.938G"), so
+        # computing free = total − used introduces up to ~1 GB of error.
+        # Reading the "unused" field avoids that rounding entirely.
+        free_gb = None
+        mf = re.search(r'([\d.]+\s*[BKMGT])\s+unused', phys_line, re.IGNORECASE)
+        if mf:
+            free_gb = parse_mem_value(mf.group(1))
+
+        # If "unused" not found, fall back to deriving "used" from free or total − used
         if used_gb is None:
-            mf = re.search(r'([\d.]+\s*[BKMGT])\s+unused', phys_line, re.IGNORECASE)
-            if mf and TOTAL_RAM_GB:
-                free_gb_raw = parse_mem_value(mf.group(1))
-                used_gb = max(0.0, TOTAL_RAM_GB - free_gb_raw)
+            if free_gb is not None and TOTAL_RAM_GB:
+                used_gb = max(0.0, TOTAL_RAM_GB - free_gb)
 
         # Compose metrics using TOTAL_RAM_GB as the authoritative denominator
         total_gb = TOTAL_RAM_GB  # may be None if sysctl failed
         if used_gb is not None:
-            free_gb = (total_gb - used_gb) if total_gb else None
+            # Use parsed free_gb if available; fall back to total − used only as last resort
+            if free_gb is None and total_gb is not None:
+                free_gb = max(0.0, total_gb - used_gb)
             sample['mem_used_gb'] = round(used_gb, 2)
             if free_gb is not None:
-                sample['mem_free_gb'] = round(max(0.0, free_gb), 2)
+                sample['mem_free_gb'] = round(free_gb, 3)
             if total_gb is not None:
                 sample['mem_total_gb'] = round(total_gb, 2)
                 sample['mem_pct'] = round(used_gb / total_gb * 100, 1)
@@ -368,6 +377,53 @@ class MonitorHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(body)
             else:
                 self.send_error(404, 'monitor.html not found')
+
+        elif self.path == '/export.csv':
+            import csv, io
+            data = parse_top_output(LOG_FILE)
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow([
+                'timestamp',
+                'cpu_used_pct', 'cpu_user_pct', 'cpu_sys_pct', 'cpu_idle_pct',
+                'mem_used_gb', 'mem_free_gb', 'mem_total_gb', 'mem_used_pct',
+                'load_1m', 'load_5m', 'load_15m',
+                'proc_total', 'proc_running',
+                'claude_proc_count',
+                'claude_cpu_pct', 'claude_cpu_pct_of_system',
+                'claude_mem_gb', 'claude_mem_pct_of_system',
+            ])
+            for s in data.get('samples', []):
+                writer.writerow([
+                    s.get('timestamp', ''),
+                    s.get('cpu_used', ''),
+                    s.get('cpu_user', ''),
+                    s.get('cpu_sys', ''),
+                    s.get('cpu_idle', ''),
+                    s.get('mem_used_gb', ''),
+                    s.get('mem_free_gb', ''),
+                    s.get('mem_total_gb', ''),
+                    s.get('mem_pct', ''),
+                    s.get('load_1m', ''),
+                    s.get('load_5m', ''),
+                    s.get('load_15m', ''),
+                    s.get('proc_total', ''),
+                    s.get('proc_running', ''),
+                    s.get('claude_proc_count', ''),
+                    s.get('claude_cpu_total', ''),
+                    s.get('claude_cpu_pct_of_system', ''),
+                    s.get('claude_mem_gb', ''),
+                    s.get('claude_mem_pct_of_system', ''),
+                ])
+            body = buf.getvalue().encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/csv; charset=utf-8')
+            self.send_header('Content-Disposition',
+                             'attachment; filename="claude_perfmon.csv"')
+            self.send_header('Content-Length', len(body))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(body)
 
         elif self.path == '/ping':
             self.send_response(200)
