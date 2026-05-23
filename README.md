@@ -40,11 +40,6 @@ start_monitor.sh  [samples] [interval_s]
 | `sampler.py` | Runs `top -l 2 -s N` in a loop; discards the stale init sample; appends only the real delta block to the log |
 | `server.py` | Parses the top log, aggregates Claude processes, augments the latest sample with a real-time `ps ax` snapshot, serves JSON + HTML |
 | `monitor.html` | Self-contained dashboard (Chart.js via CDN) |
-| `demo.sh` | **All-in-one**: starts monitor + stress test + opens browser |
-| `start_stress_test.sh` | Launches N parallel local workers named `claude-worker-N` that burn CPU and allocate RAM — **no API calls, zero tokens** |
-| `stop_stress_test.sh` | Stops all stress workers |
-| `.claude-stress-launcher` | zsh helper: renames python3 to `claude-worker-N` via `exec -a` so the process is visible in top/ps |
-| `.claude-stress.py` | Python worker: allocates RAM via numpy matrices and burns CPU with matrix multiplication |
 
 ---
 
@@ -60,7 +55,7 @@ start_monitor.sh  [samples] [interval_s]
 ```bash
 git clone https://github.com/joobid/claude-perfmon.git
 cd claude-perfmon
-chmod +x *.sh .claude-stress-launcher
+chmod +x *.sh
 
 ./start_monitor.sh          # 360 samples × 60 s = 6 h (default)
 ```
@@ -73,7 +68,6 @@ The first data point appears after the first interval (60 s by default).
 ```bash
 ./start_monitor.sh              # 360 × 60 s = 6 h  (default)
 ./start_monitor.sh 720 30       # 720 × 30 s = 6 h, finer resolution
-./start_monitor.sh 720 5        # 720 ×  5 s = 1 h, stress-test mode
 ./start_monitor.sh 20 10        # 20  × 10 s ≈ 3 min, quick test
 ```
 
@@ -99,7 +93,7 @@ The dashboard is divided into three rows:
 **Middle row — time-series and breakdown**
 
 - **CPU over time** (left): Stacked area chart — Claude CPU in orange, all other processes in blue. Lets you spot spikes and correlate them with activity.
-- **Claude processes** (centre): Bar chart counting how many `claude-*` subprocesses were alive per sample. Useful for stress tests with multiple workers.
+- **Claude processes** (centre): Bar chart counting how many `claude-*` subprocesses were alive per sample.
 - **CPU distribution** (right): Donut chart for the latest sample — proportional breakdown of Claude / other / idle.
 
 **Bottom row — memory, load, and live process list**
@@ -123,89 +117,10 @@ The dashboard is divided into three rows:
 
 ---
 
-## Stress test — verify the monitor without spending tokens
-
-The stress test launches **N local Python processes** that appear as `claude-worker-1`,
-`claude-worker-2`, … in `top` and `ps`. Because the name contains `"claude"`, the
-monitor detects and tracks them as Claude processes.
-
-**No Claude API calls are made. Zero tokens are consumed.**
-The load is generated entirely on your machine via numpy matrix multiplication.
-
-### How it works
-
-Each worker:
-1. **Allocates RAM** — creates two square float32 matrices totalling ~`RAM_MB` MB. They stay in memory for the duration of the run.
-2. **Burns CPU** — runs `np.dot(A, B)` in a tight loop using Apple's Accelerate framework (BLAS), which saturates all available CPU cores.
-3. **Appears as `claude-worker-N`** — the worker is launched through `.claude-stress-launcher`, a zsh script that uses `exec -a "claude-worker-N" python3 ...` to replace the process name at the OS level. `top`, `ps`, and the monitor all see `claude-worker-N`.
-
-If `numpy` is not installed, the worker falls back to pure Python float arithmetic (lower CPU load, but same process naming and RAM allocation behaviour).
-
-### Option A — All in one (recommended for a quick demo)
-
-```bash
-./demo.sh                    # 4 workers, 3 rounds × 45 s, 5 s sampling
-./demo.sh 6 5 60 512         # 6 workers, 5 rounds × 60 s, 512 MB each
-```
-
-`demo.sh` starts the monitor at 5 s sampling, starts the workers, and opens the browser.
-
-### Option B — Step by step
-
-```bash
-# Step 1 — start the monitor with a short interval
-./start_monitor.sh 720 5
-
-# Step 2 — in a second terminal, launch the stress test
-./start_stress_test.sh                      # 4 workers, 3 × 45 s, 400 MB each
-./start_stress_test.sh 6 5 60 512           # 6 workers, 5 × 60 s, 512 MB each
-./start_stress_test.sh 8 0 0 600            # 8 workers, run until stopped
-```
-
-> If the monitor is not already running, `start_stress_test.sh` starts it
-> automatically with the configured interval.
-
-### Stress test parameters
-
-```
-./start_stress_test.sh [workers] [rounds] [duration_s] [ram_mb] [interval]
-
-  workers     Parallel worker processes           (default: 4)
-  rounds      Computation rounds per worker       (default: 3)
-              0 = run indefinitely until stopped
-  duration_s  Seconds of CPU/RAM load per round   (default: 45)
-  ram_mb      RAM to allocate per worker, in MB   (default: 400)
-  interval    Monitor sampling interval, seconds  (default: 5)
-```
-
-### What you will see in the dashboard
-
-- Multiple rows in the **Claude Processes** table — one per `claude-worker-N`
-- Spikes in the **CPU over time** chart — each worker pushes the system CPU up
-- Rising values in the **RAM over time** chart — each worker holds `ram_mb` MB
-- Higher bars in the **Claude processes count** panel
-
-### Install numpy for maximum CPU load
-
-```bash
-pip3 install numpy --break-system-packages
-```
-
-Without numpy, the workers still run and appear in the dashboard, but CPU load is lower.
-
-### Stop the stress test
-
-```bash
-./stop_stress_test.sh     # stops all claude-worker-N processes
-./stop_monitor.sh         # stops data collection and the web server
-```
-
----
-
 ## Why the process table is always real time
 
-`top` samples at intervals (every 5 s in stress-test mode). A process that starts and
-exits between two samples can be missed entirely.
+`top` samples at intervals. A process that starts and exits between two samples can be
+missed entirely.
 
 `server.py` addresses this by running `ps ax` on every `/data` request and replacing
 the process list in the **latest** sample with the live result. Historical samples
@@ -237,10 +152,6 @@ Total RAM is read from `sysctl hw.memsize` at startup so it is always accurate.
 |---|---|---|
 | `samples` | `360` | Number of top samples to collect (`start_monitor.sh` arg 1) |
 | `interval_seconds` | `60` | Seconds between samples (`start_monitor.sh` arg 2) |
-| `workers` | `4` | Parallel stress workers (`start_stress_test.sh` arg 1) |
-| `rounds` | `3` | Rounds per worker, 0 = infinite (`start_stress_test.sh` arg 2) |
-| `duration_s` | `45` | Seconds of load per round (`start_stress_test.sh` arg 3) |
-| `ram_mb` | `400` | MB allocated per worker (`start_stress_test.sh` arg 4) |
 | `PORT` | `8765` | HTTP port for the dashboard (edit in `server.py`) |
 | `CLAUDE_KEYWORDS` | `['claude']` | Process name filters (edit in `server.py`) |
 
@@ -250,7 +161,6 @@ Total RAM is read from `sysctl hw.memsize` at startup so it is always accurate.
 |---|---|---|
 | Normal monitoring (default) | `./start_monitor.sh` | 360 × 60 s = 6 h |
 | Fine-grained monitoring | `./start_monitor.sh 720 30` | 720 × 30 s = 6 h |
-| Stress-test mode | `./start_monitor.sh 720 5` | 720 × 5 s = 1 h |
 | Custom | `./start_monitor.sh <N> <S>` | N × S seconds total |
 
 To also track other processes (e.g. `node` or `python`), edit `server.py`:
@@ -284,25 +194,6 @@ lsof -ti tcp:8765 | xargs kill -9
 The filter matches process names containing `"claude"` (case-insensitive). Verify with:
 ```bash
 ps aux | grep -i claude
-```
-
-**Stress test workers not appearing in the dashboard**
-Use a short sampling interval (≤ 10 s) and check that numpy is installed:
-```bash
-./stop_monitor.sh && ./start_monitor.sh 720 5
-pip3 install numpy --break-system-packages
-./start_stress_test.sh
-```
-
-**`.claude-stress-launcher` permission denied**
-```bash
-chmod +x .claude-stress-launcher .claude-stress.py
-```
-
-**Low CPU load during stress test**
-Without numpy, workers use pure Python and generate less CPU pressure. Install numpy:
-```bash
-pip3 install numpy --break-system-packages
 ```
 
 ---

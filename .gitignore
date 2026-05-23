@@ -4,16 +4,6 @@
 *.log
 __pycache__/
 *.pyc
-.stress_pids
-.stress_tmpdir
-.stress_logs/
 .monitor_pids
 .current_interval
 .sampler.log
-
-# Stress test worker scripts (generated at runtime, committed for reference)
-# .claude-stress-launcher  ← kept in repo (legacy launcher, no longer primary)
-# .claude-stress.py        ← kept in repo (worker script)
-
-# Binary created at stress-test startup (hard-link / copy of python3)
-claude-worker
