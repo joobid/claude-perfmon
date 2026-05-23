@@ -13,7 +13,6 @@ import sys
 import time
 import signal
 import re
-from pathlib import Path
 
 log_file = sys.argv[1]
 samples  = int(sys.argv[2]) if len(sys.argv) > 2 else 360
@@ -30,7 +29,7 @@ signal.signal(signal.SIGINT,  _stop)
 print(f'[sampler] Starting: {samples} samples × {interval}s → {log_file}', flush=True)
 
 
-def _run_top(wait: int, timeout: int) -> str | None:
+def _run_top(wait, timeout):
     """Run `top -l 2 -s <wait>` and return the real delta block, or None on failure."""
     try:
         result = subprocess.run(

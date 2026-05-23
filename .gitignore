@@ -1,4 +1,5 @@
 # Runtime log files
+logs/
 .current_log
 .server.log
 *.log

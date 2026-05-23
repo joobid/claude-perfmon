@@ -212,6 +212,7 @@
   <div class="hr">
     <div id="spill" class="pill warn"><div class="dot"></div><span id="stxt">Connecting…</span></div>
     <div id="countdown"></div>
+    <button class="btn" onclick="exportCSV()">↓ CSV</button>
     <button class="btn" onclick="loadData()">↻ Refresh</button>
   </div>
 </header>
@@ -558,6 +559,15 @@ function renderTable(procs, last){
     <thead><tr><th>PID</th><th>Process</th><th>CPU</th><th class="r">RAM</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
+}
+
+// ── CSV export ─────────────────────────────────────────────────────────────
+function exportCSV(){
+  const date = new Date().toISOString().slice(0,19).replace(/[T:]/g,'-');
+  const a = document.createElement('a');
+  a.href = '/export.csv';
+  a.download = `claude_perfmon_${date}.csv`;
+  a.click();
 }
 
 // ── Fetch ──────────────────────────────────────────────────────────────────
