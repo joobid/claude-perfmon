@@ -1,0 +1,12 @@
+# Runtime log files
+.current_log
+.server.log
+*.log
+__pycache__/
+*.pyc
+.stress_pids
+.stress_tmpdir
+.stress_logs/
+.monitor_pids
+.current_interval
+.sampler.log

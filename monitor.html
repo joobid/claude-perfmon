@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Claude Performance Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+<style>
+  :root {
+    --bg:      #0d1117;
+    --surface: #161b22;
+    --sur2:    #1c2128;
+    --border:  #30363d;
+    --claude:  #e0825a;
+    --claudeA: rgba(224,130,90,.18);
+    --other:   #4f8ef7;
+    --otherA:  rgba(79,142,247,.14);
+    --idle:    #2d333b;
+    --green:   #3fb950;
+    --yellow:  #d29922;
+    --red:     #f85149;
+    --text:    #e6edf3;
+    --muted:   #7d8590;
+    --dim:     #484f58;
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html,body{
+    height:100vh;overflow:hidden;
+    background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  }
+  body{display:flex;flex-direction:column}
+
+  /* ════════════════════════════════════════
+     HEADER
+  ════════════════════════════════════════ */
+  header{
+    height:42px;flex-shrink:0;
+    background:var(--surface);border-bottom:1px solid var(--border);
+    padding:0 16px;display:flex;align-items:center;justify-content:space-between;
+  }
+  .hl{display:flex;align-items:center;gap:9px}
+  .logo{
+    width:24px;height:24px;border-radius:5px;flex-shrink:0;
+    background:linear-gradient(135deg,var(--claude),#b05a36);
+    display:flex;align-items:center;justify-content:center;font-size:12px;
+  }
+  .htitle{font-size:13px;font-weight:600}
+  .hpath{font-size:10px;color:var(--muted);max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hr{display:flex;align-items:center;gap:8px}
+  .pill{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:20px;font-size:10px;font-weight:500}
+  .ok  {background:rgba(63,185,80,.12);color:var(--green);border:1px solid rgba(63,185,80,.25)}
+  .warn{background:rgba(210,153,34,.12);color:var(--yellow);border:1px solid rgba(210,153,34,.25)}
+  .err {background:rgba(248,81,73,.12);color:var(--red);border:1px solid rgba(248,81,73,.25)}
+  .dot{width:5px;height:5px;border-radius:50%;background:currentColor;animation:blink 2s ease-in-out infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+  .btn{background:var(--sur2);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:4px 10px;font-size:10px;cursor:pointer;transition:background .15s}
+  .btn:hover{background:var(--border)}
+  #countdown{font-size:10px;color:var(--muted);min-width:82px;text-align:right}
+
+  /* ════════════════════════════════════════
+     RESOURCE GAUGES  (hero section)
+  ════════════════════════════════════════ */
+  .gauges{
+    flex-shrink:0;
+    display:grid;grid-template-columns:1fr 1fr;gap:8px;
+    padding:8px 14px 0;
+  }
+  .gauge{
+    background:var(--surface);border:1px solid var(--border);border-radius:10px;
+    padding:12px 16px 10px;
+  }
+
+  /* top row: icon+label  |  main numbers */
+  .gauge-top{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px}
+  .gauge-icon{font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--muted)}
+
+  .gauge-nums{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+
+  /* Claude value — BIG */
+  .gv-claude{
+    font-size:32px;font-weight:800;letter-spacing:-1.5px;color:var(--claude);line-height:1;
+  }
+  .gv-unit{font-size:14px;font-weight:400;color:var(--muted);margin-left:1px}
+  /* separator */
+  .gv-sep{font-size:18px;color:var(--dim)}
+  /* Total value */
+  .gv-total{font-size:22px;font-weight:600;letter-spacing:-.8px;color:var(--text);line-height:1}
+
+  /* percentage callout */
+  .gauge-pct{
+    text-align:right;margin-bottom:8px;font-size:11px;color:var(--muted);
+  }
+  .gauge-pct strong{font-size:15px;font-weight:700;color:var(--claude)}
+
+  /* segmented bar */
+  .bar-track{
+    height:20px;border-radius:6px;overflow:hidden;
+    background:var(--idle);display:flex;
+  }
+  .seg-c{background:var(--claude);transition:width .5s ease;min-width:0}
+  .seg-o{background:var(--other);transition:width .5s ease;min-width:0}
+  /* free segment = remaining, styled by track bg */
+
+  /* legend */
+  .gauge-legend{display:flex;gap:14px;margin-top:7px;flex-wrap:wrap}
+  .leg{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted)}
+  .leg-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0}
+  .leg-val{font-weight:600;color:var(--text)}
+
+  /* ════════════════════════════════════════
+     CHARTS + TABLE  (fills remaining space)
+  ════════════════════════════════════════ */
+  .charts{
+    flex:1;min-height:0;
+    display:grid;
+    grid-template-columns:1fr 1fr 1fr;
+    grid-template-rows:1fr 1fr;
+    gap:8px;
+    padding:8px 14px 10px;
+  }
+  .card{
+    background:var(--surface);border:1px solid var(--border);border-radius:10px;
+    display:flex;flex-direction:column;overflow:hidden;min-height:0;
+  }
+  .ch{padding:7px 11px 3px;flex-shrink:0;display:flex;align-items:baseline;gap:7px}
+  .ct{font-size:11px;font-weight:600}
+  .cs{font-size:10px;color:var(--muted)}
+  .cb{flex:1;min-height:0;position:relative;padding:2px 8px 6px}
+  .cb canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+
+  /* donut */
+  .donut-b{
+    flex:1;min-height:0;position:relative;
+    display:flex;align-items:center;justify-content:center;padding:2px 8px 6px;
+  }
+  .donut-b canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+  .donut-c{position:absolute;text-align:center;pointer-events:none;z-index:2}
+  .dp{font-size:20px;font-weight:800;color:var(--claude);letter-spacing:-.5px}
+  .dl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+
+  /* table */
+  .tbl-b{flex:1;min-height:0;overflow-y:auto}
+  .tbl-b::-webkit-scrollbar{width:3px}
+  .tbl-b::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+  table{width:100%;border-collapse:collapse}
+  thead th{
+    position:sticky;top:0;z-index:1;background:var(--sur2);
+    font-size:9px;text-transform:uppercase;letter-spacing:.4px;
+    color:var(--muted);text-align:left;padding:4px 10px;
+    border-bottom:1px solid var(--border);
+  }
+  th.r,td.r{text-align:right}
+  tbody tr{border-bottom:1px solid rgba(48,54,61,.45);transition:background .1s}
+  tbody tr:hover{background:rgba(224,130,90,.06)}
+  tbody tr:last-child{border-bottom:none}
+  tbody td{padding:4px 10px;font-size:11px}
+  .tp{font-family:monospace;font-size:9px;color:var(--muted)}
+  .tc{font-weight:500;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bw{display:flex;align-items:center;gap:4px}
+  .br{height:4px;border-radius:2px;background:var(--claude);min-width:2px}
+  .tm{font-family:monospace;font-size:9px;color:var(--muted)}
+  .empty{padding:16px;text-align:center;color:var(--muted);font-size:11px}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="hl">
+    <div class="logo">✦</div>
+    <div>
+      <div class="htitle">Claude Performance Monitor</div>
+      <div class="hpath" id="log-path">Loading…</div>
+    </div>
+  </div>
+  <div class="hr">
+    <div id="spill" class="pill warn"><div class="dot"></div><span id="stxt">Connecting…</span></div>
+    <div id="countdown"></div>
+    <button class="btn" onclick="loadData()">↻ Refresh</button>
+  </div>
+</header>
+
+<!-- RESOURCE GAUGES -->
+<div class="gauges">
+
+  <!-- CPU gauge -->
+  <div class="gauge">
+    <div class="gauge-top">
+      <div class="gauge-icon">🖥 CPU</div>
+      <div class="gauge-nums">
+        <span class="gv-claude" id="gc-claude">—</span><span class="gv-unit">%</span>
+        <span class="gv-sep">/</span>
+        <span class="gv-total" id="gc-total">—</span><span class="gv-unit" style="font-size:12px">% used</span>
+      </div>
+    </div>
+    <div class="gauge-pct">
+      Claude uses <strong id="gc-pct">—</strong> of active CPU &nbsp;·&nbsp; <span id="gc-idle" style="color:var(--muted)">— idle</span>
+    </div>
+    <div class="bar-track" id="cpu-bar">
+      <div class="seg-c" id="cpu-seg-c" style="width:0%"></div>
+      <div class="seg-o" id="cpu-seg-o" style="width:0%"></div>
+    </div>
+    <div class="gauge-legend">
+      <div class="leg"><div class="leg-dot" style="background:var(--claude)"></div>Claude <span class="leg-val" id="gl-ccpu">—</span>%</div>
+      <div class="leg"><div class="leg-dot" style="background:var(--other)"></div>Other processes <span class="leg-val" id="gl-ocpu">—</span>%</div>
+      <div class="leg"><div class="leg-dot" style="background:var(--idle);border:1px solid var(--border)"></div>Idle <span class="leg-val" id="gl-icpu">—</span>%</div>
+    </div>
+  </div>
+
+  <!-- RAM gauge -->
+  <div class="gauge">
+    <div class="gauge-top">
+      <div class="gauge-icon">🧠 RAM</div>
+      <div class="gauge-nums">
+        <span class="gv-claude" id="gm-claude">—</span><span class="gv-unit">GB</span>
+        <span class="gv-sep">/</span>
+        <span class="gv-total" id="gm-total">—</span><span class="gv-unit" style="font-size:12px">GB total</span>
+      </div>
+    </div>
+    <div class="gauge-pct">
+      Claude uses <strong id="gm-pct">—</strong> of total RAM &nbsp;·&nbsp; <span id="gm-free" style="color:var(--muted)">— libre</span>
+    </div>
+    <div class="bar-track" id="ram-bar">
+      <div class="seg-c" id="ram-seg-c" style="width:0%"></div>
+      <div class="seg-o" id="ram-seg-o" style="width:0%"></div>
+    </div>
+    <div class="gauge-legend">
+      <div class="leg"><div class="leg-dot" style="background:var(--claude)"></div>Claude <span class="leg-val" id="gl-cmem">—</span> GB</div>
+      <div class="leg"><div class="leg-dot" style="background:var(--other)"></div>Others <span class="leg-val" id="gl-omem">—</span> GB</div>
+      <div class="leg"><div class="leg-dot" style="background:var(--idle);border:1px solid var(--border)"></div>Free <span class="leg-val" id="gl-fmem">—</span> GB</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- CHARTS -->
+<div class="charts">
+
+  <!-- CPU stacked -->
+  <div class="card" style="grid-column:1;grid-row:1">
+    <div class="ch"><span class="ct">CPU over time</span><span class="cs">% — stacked</span></div>
+    <div class="cb"><canvas id="cpuChart"></canvas></div>
+  </div>
+
+  <!-- RAM stacked -->
+  <div class="card" style="grid-column:1;grid-row:2">
+    <div class="ch"><span class="ct">RAM over time</span><span class="cs">GB — stacked</span></div>
+    <div class="cb"><canvas id="memChart"></canvas></div>
+  </div>
+
+  <!-- Proc count -->
+  <div class="card" style="grid-column:2;grid-row:1">
+    <div class="ch"><span class="ct">Claude processes</span><span class="cs">count per sample</span></div>
+    <div class="cb"><canvas id="procChart"></canvas></div>
+  </div>
+
+  <!-- Load avg -->
+  <div class="card" style="grid-column:2;grid-row:2">
+    <div class="ch"><span class="ct">Load Average</span><span class="cs">1m · 5m · 15m</span></div>
+    <div class="cb"><canvas id="loadChart"></canvas></div>
+  </div>
+
+  <!-- Donut -->
+  <div class="card" style="grid-column:3;grid-row:1">
+    <div class="ch"><span class="ct">CPU distribution</span><span class="cs">latest sample</span></div>
+    <div class="donut-b">
+      <canvas id="donutChart"></canvas>
+      <div class="donut-c">
+        <div class="dp" id="donut-pct">—</div>
+        <div class="dl">Claude</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Process table -->
+  <div class="card" style="grid-column:3;grid-row:2">
+    <div class="ch" style="justify-content:space-between;display:flex">
+      <span class="ct">✦ Claude Processes</span>
+      <span class="cs" id="tbl-meta"></span>
+    </div>
+    <div class="tbl-b" id="tbl-body">
+      <div class="empty">Waiting for first sample…</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const DATA_URL   = '/data';
+let REFRESH_MS = 60_000;  // updated dynamically from server after first load
+
+Chart.defaults.color = '#7d8590';
+Chart.defaults.borderColor = '#30363d';
+
+// ── Chart factories ────────────────────────────────────────────────────────
+const TT = (unit) => ({
+  backgroundColor:'#161b22',borderColor:'#30363d',borderWidth:1,
+  titleColor:'#e6edf3',bodyColor:'#7d8590',padding:7,
+  callbacks:{ label: c => ` ${c.dataset.label}: ${(+c.parsed.y).toFixed(2)}${unit}` }
+});
+Chart.register(ChartDataLabels);
+const AX = {
+  x:{ grid:{color:'rgba(48,54,61,.5)'}, ticks:{maxTicksLimit:8,font:{size:9}} },
+  y:{ grid:{color:'rgba(48,54,61,.5)'}, ticks:{font:{size:9}}, min:0, stacked:true }
+};
+const LEGEND = { position:'top', labels:{boxWidth:8,padding:9,font:{size:9}} };
+
+// Stacked area — CPU
+const cpuChart = new Chart(document.getElementById('cpuChart'),{
+  type:'line',
+  data:{ labels:[], datasets:[
+    { label:'Claude %', data:[], borderColor:'#e0825a', backgroundColor:'rgba(224,130,90,.55)',
+      fill:'origin', tension:.35, pointRadius:2, borderWidth:1.5, order:1 },
+    { label:'Others %',  data:[], borderColor:'#4f8ef7', backgroundColor:'rgba(79,142,247,.35)',
+      fill:'-1',     tension:.35, pointRadius:2, borderWidth:1.5, order:2 },
+  ]},
+  options:{
+    responsive:true, maintainAspectRatio:false, animation:{duration:300},
+    interaction:{mode:'index',intersect:false},
+    plugins:{ legend:LEGEND, tooltip:TT('%'), datalabels:{display:false} },
+    scales:{ ...AX, y:{...AX.y, max:100} }
+  }
+});
+
+// Stacked area — RAM
+const memChart = new Chart(document.getElementById('memChart'),{
+  type:'line',
+  data:{ labels:[], datasets:[
+    { label:'Claude GB', data:[], borderColor:'#e0825a', backgroundColor:'rgba(224,130,90,.55)',
+      fill:'origin', tension:.35, pointRadius:2, borderWidth:1.5, order:1 },
+    { label:'Others GB',  data:[], borderColor:'#4f8ef7', backgroundColor:'rgba(79,142,247,.35)',
+      fill:'-1',     tension:.35, pointRadius:2, borderWidth:1.5, order:2 },
+  ]},
+  options:{
+    responsive:true, maintainAspectRatio:false, animation:{duration:300},
+    interaction:{mode:'index',intersect:false},
+    plugins:{ legend:LEGEND, tooltip:TT(' GB'), datalabels:{display:false} },
+    scales:AX
+  }
+});
+
+// Bar — proc count (integer Y-axis, value labels on bars)
+const procChart = new Chart(document.getElementById('procChart'),{
+  type:'bar',
+  data:{ labels:[], datasets:[
+    { label:'Processes', data:[], backgroundColor:'rgba(224,130,90,.65)',
+      borderColor:'#e0825a', borderWidth:1, borderRadius:4 },
+  ]},
+  options:{
+    responsive:true, maintainAspectRatio:false, animation:{duration:300},
+    plugins:{
+      legend:{display:false},
+      tooltip:TT(''),
+      datalabels:{
+        anchor:'end', align:'end',
+        color:'rgba(255,255,255,.7)',
+        font:{size:9, weight:'600'},
+        formatter: v => v > 0 ? v : '',
+        offset: 2,
+      }
+    },
+    scales:{
+      x: AX.x,
+      y:{
+        ...AX.y, stacked:false,
+        ticks:{ font:{size:9}, stepSize:1, precision:0 },
+        suggestedMax: 5,
+      }
+    }
+  }
+});
+
+// Line — load avg
+const loadChart = new Chart(document.getElementById('loadChart'),{
+  type:'line',
+  data:{ labels:[], datasets:[
+    { label:'1m',  data:[], borderColor:'#fbbf24', fill:false, tension:.35, pointRadius:2, borderWidth:2 },
+    { label:'5m',  data:[], borderColor:'#f97316', fill:false, tension:.35, pointRadius:2, borderWidth:1.5 },
+    { label:'15m', data:[], borderColor:'#ef4444', fill:false, tension:.35, pointRadius:2, borderWidth:1.5, borderDash:[4,3] },
+  ]},
+  options:{
+    responsive:true, maintainAspectRatio:false, animation:{duration:300},
+    interaction:{mode:'index',intersect:false},
+    plugins:{ legend:LEGEND, tooltip:TT(''), datalabels:{display:false} },
+    scales:{ x:AX.x, y:{...AX.y, stacked:false} }
+  }
+});
+
+// Donut — CPU share
+const donutChart = new Chart(document.getElementById('donutChart'),{
+  type:'doughnut',
+  data:{ labels:['Claude','Others','Idle'], datasets:[{
+    data:[0,0,100],
+    backgroundColor:['#ff8c55','#58a6ff','#4d5a6e'],
+    borderColor:'#161b22', borderWidth:2, hoverOffset:3,
+  }]},
+  options:{
+    responsive:true, maintainAspectRatio:false, cutout:'62%',
+    plugins:{
+      legend:{ position:'bottom', labels:{boxWidth:8,padding:8,font:{size:9}} },
+      tooltip:{ backgroundColor:'#161b22', borderColor:'#30363d', borderWidth:1,
+        titleColor:'#e6edf3', bodyColor:'#7d8590',
+        callbacks:{ label: c => ` ${c.label}: ${(+c.parsed).toFixed(1)}%` } },
+      datalabels:{
+        color:'#ffffff',
+        font:{ size:11, weight:'700' },
+        formatter: v => v > 1 ? v.toFixed(1) : '',
+        textShadowColor:'rgba(0,0,0,.6)',
+        textShadowBlur:4,
+      }
+    }
+  }
+});
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function set(id, v)   { const e=document.getElementById(id); if(e) e.textContent = v??'—' }
+function fmt(v, d)    { return v!=null ? (+v).toFixed(d) : '—' }
+function pct(id, w)   { const e=document.getElementById(id); if(e) e.style.width = Math.min(100,Math.max(0,w))+'%' }
+function upd(ch, L, arrs){ ch.data.labels=L; arrs.forEach((a,i)=>ch.data.datasets[i].data=a); ch.update('active') }
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function render(data){
+  const S = data.samples||[];
+  if(!S.length) return;
+  const L = S.map(s=>s.time_label||s.timestamp||'');
+  const last = S[S.length-1];
+
+  // Computed series
+  const claudeCpu = S.map(s=>s.claude_cpu_total??null);
+  const otherCpu  = S.map(s=>{
+    const t=s.cpu_used??0, c=s.claude_cpu_total??0; return Math.max(0,+(t-c).toFixed(2));
+  });
+  const claudeMem = S.map(s=>s.claude_mem_gb??null);
+  const otherMem  = S.map(s=>{
+    const t=s.mem_used_gb??0, c=s.claude_mem_gb??0; return Math.max(0,+(t-c).toFixed(3));
+  });
+
+  upd(cpuChart,  L, [claudeCpu, otherCpu]);
+  upd(memChart,  L, [claudeMem, otherMem]);
+  upd(procChart, L, [S.map(s=>s.claude_proc_count??null)]);
+  upd(loadChart, L, [S.map(s=>s.load_1m??null), S.map(s=>s.load_5m??null), S.map(s=>s.load_15m??null)]);
+
+  // ── CPU gauge ──────────────────────────────────────────────────────────
+  const cc   = last.claude_cpu_total??0;
+  const used = last.cpu_used??0;
+  const idle = Math.max(0,100-used);
+  const other= Math.max(0,used-cc);
+
+  set('gc-claude', fmt(cc,2));
+  set('gc-total',  fmt(used,1));
+  set('gc-pct',    cc>0 && used>0 ? fmt(cc/used*100,1)+'%' : '—');
+  set('gc-idle',   fmt(idle,1)+'% idle');
+  set('gl-ccpu',   fmt(cc,2));
+  set('gl-ocpu',   fmt(other,2));
+  set('gl-icpu',   fmt(idle,1));
+
+  // Bar segments: each as % of 100 total CPU
+  pct('cpu-seg-c', cc);
+  pct('cpu-seg-o', other);
+
+  // ── RAM gauge ──────────────────────────────────────────────────────────
+  const cm    = last.claude_mem_gb??0;
+  const usedM = last.mem_used_gb??0;
+  const totM  = last.mem_total_gb??0;
+  const freeM = last.mem_free_gb??Math.max(0,totM-usedM);
+  const otherM= Math.max(0,usedM-cm);
+  const cmPct = totM>0 ? cm/totM*100 : 0;
+  const otPct = totM>0 ? otherM/totM*100 : 0;
+
+  set('gm-claude', fmt(cm,2));
+  set('gm-total',  fmt(totM,1));
+  set('gm-pct',    totM>0 ? fmt(cmPct,1)+'%' : '—');
+  set('gm-free',   fmt(freeM,1)+' GB free');
+  set('gl-cmem',   fmt(cm,2));
+  set('gl-omem',   fmt(otherM,2));
+  set('gl-fmem',   fmt(freeM,1));
+
+  pct('ram-seg-c', cmPct);
+  pct('ram-seg-o', otPct);
+
+  // ── Donut ──────────────────────────────────────────────────────────────
+  donutChart.data.datasets[0].data = [+cc.toFixed(1), +other.toFixed(1), +idle.toFixed(1)];
+  donutChart.update('active');
+  set('donut-pct', fmt(cc,1)+'%');
+
+  // ── Log path ───────────────────────────────────────────────────────────
+  document.getElementById('log-path').textContent = data.log_file||'';
+
+  // RAM debug
+  if(last._raw_phys_mem){
+    console.log('[PhysicalMem raw]', last._raw_phys_mem);
+    console.log('[mem_used_gb]', last.mem_used_gb, '[mem_total_gb]', last.mem_total_gb);
+  }
+
+  // ── Table ──────────────────────────────────────────────────────────────
+  renderTable(last.claude_procs||[], last);
+}
+
+function renderTable(procs, last){
+  const wrap = document.getElementById('tbl-body');
+  const meta = document.getElementById('tbl-meta');
+  if(!procs.length){
+    wrap.innerHTML='<div class="empty">No Claude processes detected</div>';
+    meta.textContent=''; return;
+  }
+  meta.textContent=`CPU ${fmt(last.claude_cpu_total,2)}%  ·  RAM ${fmt(last.claude_mem_gb,2)} GB`;
+  const mx = Math.max(...procs.map(p=>p.cpu),1);
+  const rows = procs.map(p=>{
+    const bw = Math.max(2, Math.round(p.cpu/mx*55));
+    return `<tr>
+      <td class="tp">${p.pid}</td>
+      <td class="tc" title="${p.cmd}">${p.cmd}</td>
+      <td><div class="bw"><div class="br" style="width:${bw}px"></div><span>${p.cpu.toFixed(1)}%</span></div></td>
+      <td class="tm r">${p.mem_str}</td>
+    </tr>`;
+  }).join('');
+  wrap.innerHTML=`<table>
+    <thead><tr><th>PID</th><th>Process</th><th>CPU</th><th class="r">RAM</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// ── Fetch ──────────────────────────────────────────────────────────────────
+async function loadData(){
+  setStatus('warn','Updating…');
+  try{
+    const res = await fetch(DATA_URL+'?t='+Date.now());
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    // Sync refresh timer to actual sampling interval reported by server
+    if(data.sample_interval_s > 0){
+      const newMs = data.sample_interval_s * 1000;
+      if(newMs !== REFRESH_MS){ REFRESH_MS = newMs; secs = data.sample_interval_s; }
+    }
+    if(data.samples?.length){ render(data); setStatus('ok',`${data.sample_count} samples`); }
+    else setStatus('warn','No data yet');
+  } catch { setStatus('err','No connection'); }
+}
+function setStatus(type,text){
+  document.getElementById('spill').className=`pill ${type}`;
+  document.getElementById('stxt').textContent=text;
+}
+let secs=REFRESH_MS/1000;
+setInterval(()=>{
+  document.getElementById('countdown').textContent=`Refresh in ${secs}s`;
+  if(--secs<=0){ secs=REFRESH_MS/1000; loadData(); }
+},1000);
+loadData();
+</script>
+</body>
+</html>
