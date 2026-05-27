@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-sampler.py — Reliable macOS CPU/process sampler for Claude Performance Monitor.
+sampler.py — Reliable CPU/process sampler for Claude Performance Monitor.
+Supports macOS (top -l) and Linux / WSL (top -b).
 
-Replaces `top -l N -s S` (which dies in nohup mode) with a robust Python loop
-that calls `top -l 2 -s <interval>` once per cycle, discards the init sample,
+Calls top once per cycle with 2 iterations, discards the stale init sample,
 and appends only the real delta measurement to the log file.
 
 Usage: python3 sampler.py <log_file> <samples> <interval_seconds>
@@ -13,6 +13,8 @@ import sys
 import time
 import signal
 import re
+
+IS_LINUX = sys.platform.startswith('linux')
 
 log_file = sys.argv[1]
 samples  = int(sys.argv[2]) if len(sys.argv) > 2 else 360
@@ -27,19 +29,29 @@ signal.signal(signal.SIGTERM, _stop)
 signal.signal(signal.SIGINT,  _stop)
 
 print(f'[sampler] Starting: {samples} samples × {interval}s → {log_file}', flush=True)
+print(f'[sampler] Platform: {"Linux/WSL" if IS_LINUX else "macOS"}', flush=True)
 
 
 def _run_top(wait, timeout):
-    """Run `top -l 2 -s <wait>` and return the real delta block, or None on failure."""
+    """Run top with 2 iterations and return the real delta block, or None on failure."""
     try:
-        result = subprocess.run(
-            ['top', '-l', '2', '-s', str(wait), '-n', '9999'],
-            capture_output=True, text=True, timeout=timeout
-        )
-        blocks = [
-            b for b in re.split(r'(?=^Processes:)', result.stdout, flags=re.MULTILINE)
-            if b.strip() and 'Processes:' in b
-        ]
+        if IS_LINUX:
+            # -b batch mode, -n 2 iterations, -d delay in seconds
+            cmd = ['top', '-b', '-n', '2', '-d', str(wait)]
+        else:
+            # macOS: -l log mode, 2 samples, -s interval, -n max processes shown
+            cmd = ['top', '-l', '2', '-s', str(wait), '-n', '9999']
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+        if IS_LINUX:
+            # Each iteration block starts with 'top - HH:MM:SS'
+            blocks = [b for b in re.split(r'(?=^top - )', result.stdout, flags=re.MULTILINE)
+                      if b.strip() and b.lstrip().startswith('top - ')]
+        else:
+            blocks = [b for b in re.split(r'(?=^Processes:)', result.stdout, flags=re.MULTILINE)
+                      if b.strip() and 'Processes:' in b]
+
         if len(blocks) >= 2:
             return blocks[-1]
         if blocks:
@@ -79,7 +91,7 @@ while running and count < samples:
         count += 1
         print(f'[sampler] {count}/{samples}', flush=True)
     else:
-        print(f'[sampler] WARNING: no Processes: block in top output (sample {count+1})', flush=True)
+        print(f'[sampler] WARNING: no valid block in top output (sample {count+1})', flush=True)
 
     # Sleep any remaining time in this interval
     elapsed = time.time() - t0
