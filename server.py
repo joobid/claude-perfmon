@@ -12,8 +12,11 @@ import re
 import sys
 import os
 import subprocess
+from datetime import date
 from pathlib import Path
 from typing import Optional
+
+IS_LINUX = sys.platform.startswith('linux')
 
 LOG_FILE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.expanduser('~'), 'informe_cpu.txt')
 PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
@@ -134,6 +137,18 @@ def parse_mem_value(s: str) -> float:
     return to_gb(float(m.group(1)), m.group(2)) if m else 0.0
 
 
+def _parse_rss_linux(s: str) -> float:
+    """Linux top RES column (plain KB integer or K/M/G suffix) → GB."""
+    s = s.strip().lower()
+    try:
+        if s.endswith('g'): return float(s[:-1])
+        if s.endswith('m'): return float(s[:-1]) / 1024
+        if s.endswith('k'): return float(s[:-1]) / 1024 / 1024
+        return int(s) / 1024 / 1024   # plain KB (Linux default)
+    except (ValueError, AttributeError):
+        return 0.0
+
+
 def is_claude_process(cmd: str) -> bool:
     """True if the process name corresponds to Claude."""
     cmd_lower = cmd.lower()
@@ -154,38 +169,68 @@ def parse_top_output(filepath: str) -> dict:
                 'error': str(e)}
 
     samples = []
-    raw_blocks = re.split(r'(?=^Processes:)', content, flags=re.MULTILINE)
+
+    # Block splitting differs by platform: Linux starts each iteration with 'top - ',
+    # macOS starts with 'Processes:'.
+    if IS_LINUX:
+        raw_blocks = re.split(r'(?=^top - )', content, flags=re.MULTILINE)
+    else:
+        raw_blocks = re.split(r'(?=^Processes:)', content, flags=re.MULTILINE)
 
     for block in raw_blocks:
-        if not block.strip() or 'Processes:' not in block:
+        if not block.strip():
+            continue
+        if IS_LINUX and not block.lstrip().startswith('top - '):
+            continue
+        if not IS_LINUX and 'Processes:' not in block:
             continue
 
         sample = {}
 
         # ── Timestamp ────────────────────────────────────────────────────────
-        dt = re.search(r'^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})', block, re.MULTILINE)
-        if dt:
-            sample['timestamp'] = dt.group(1)
-            sample['time_label'] = dt.group(1)[11:]  # HH:MM:SS
+        if IS_LINUX:
+            # Linux top -b only reports time, not date — prepend today's date.
+            dt = re.search(r'^top - (\d{2}:\d{2}:\d{2})', block, re.MULTILINE)
+            if dt:
+                today = date.today().strftime('%Y/%m/%d')
+                sample['timestamp']  = f'{today} {dt.group(1)}'
+                sample['time_label'] = dt.group(1)
+        else:
+            dt = re.search(r'^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})', block, re.MULTILINE)
+            if dt:
+                sample['timestamp']  = dt.group(1)
+                sample['time_label'] = dt.group(1)[11:]  # HH:MM:SS
 
-        # ── Total processes ─────────────────────────────────────────────────────
-        proc = re.search(
-            r'Processes:\s+(\d+)\s+total,\s+(\d+)\s+running,\s+(\d+)\s+sleeping', block)
+        # ── Total processes ───────────────────────────────────────────────────
+        if IS_LINUX:
+            proc = re.search(
+                r'Tasks:\s+(\d+)\s+total,\s+(\d+)\s+running,\s+(\d+)\s+sleeping', block)
+        else:
+            proc = re.search(
+                r'Processes:\s+(\d+)\s+total,\s+(\d+)\s+running,\s+(\d+)\s+sleeping', block)
         if proc:
             sample['proc_total']    = int(proc.group(1))
             sample['proc_running']  = int(proc.group(2))
             sample['proc_sleeping'] = int(proc.group(3))
 
         # ── Load Average ──────────────────────────────────────────────────────
-        load = re.search(r'Load Avg:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)', block)
+        if IS_LINUX:
+            load = re.search(r'load average:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)', block)
+        else:
+            load = re.search(r'Load Avg:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)', block)
         if load:
             sample['load_1m']  = float(load.group(1))
             sample['load_5m']  = float(load.group(2))
             sample['load_15m'] = float(load.group(3))
 
-        # ── System CPU ─────────────────────────────────────────────────────────
-        cpu = re.search(
-            r'CPU usage:\s*([\d.]+)%\s+user,\s*([\d.]+)%\s+sys,\s*([\d.]+)%\s+idle', block)
+        # ── System CPU ────────────────────────────────────────────────────────
+        if IS_LINUX:
+            # %Cpu(s):  3.7 us,  0.9 sy,  0.0 ni, 95.3 id, ...
+            cpu = re.search(
+                r'%Cpu\(s\):\s*([\d.]+)\s+us,\s*([\d.]+)\s+sy,.*?([\d.]+)\s+id', block)
+        else:
+            cpu = re.search(
+                r'CPU usage:\s*([\d.]+)%\s+user,\s*([\d.]+)%\s+sys,\s*([\d.]+)%\s+idle', block)
         if cpu:
             sample['cpu_user'] = float(cpu.group(1))
             sample['cpu_sys']  = float(cpu.group(2))
@@ -193,115 +238,151 @@ def parse_top_output(filepath: str) -> dict:
             sample['cpu_used'] = round(100.0 - float(cpu.group(3)), 2)
 
         # ── System physical memory ────────────────────────────────────────────
-        # Total RAM comes from sysctl at startup (100% reliable).
-        # From the top file we only extract the "used" value.
-        phys_line = next((l for l in block.splitlines() if 'PhysMem' in l), '')
-        sample['_raw_phys_mem'] = phys_line.strip()
-
-        used_gb = None
-
-        # Find the "used" value in the PhysicalMem line.
-        # Explicitly exclude "unused" to avoid capturing it by mistake.
-        # Strategy: match [number][unit] followed by " used" where
-        # the next word is exactly "used" (not "unused").
-        for pat in [
-            # Pattern 1: anchor from PhysicalMem — first figure before " used"
-            r'PhysMem:\s*([\d.]+\s*[BKMGT])\b',
-            # Pattern 2: any figure+unit followed by " used" without "un" prefix
-            r'(?<![a-z])([\d.]+\s*[BKMGT])\s+used(?![\w])',
-        ]:
-            m = re.search(pat, phys_line, re.IGNORECASE)
-            if m:
-                candidate = parse_mem_value(m.group(1))
-                # Sanity check: "used" must be > 0 and, if TOTAL_RAM_GB is known,
-                # cannot exceed the installed physical RAM
-                if candidate > 0 and (TOTAL_RAM_GB is None or candidate <= TOTAL_RAM_GB * 1.05):
-                    used_gb = candidate
-                    break
-
-        # Parse "unused" directly from the PhysMem line — this is always accurate.
-        # "top" rounds the "used" figure (e.g. "15G" instead of "15.938G"), so
-        # computing free = total − used introduces up to ~1 GB of error.
-        # Reading the "unused" field avoids that rounding entirely.
-        free_gb = None
-        mf = re.search(r'([\d.]+\s*[BKMGT])\s+unused', phys_line, re.IGNORECASE)
-        if mf:
-            free_gb = parse_mem_value(mf.group(1))
-
-        # If "unused" not found, fall back to deriving "used" from free or total − used
-        if used_gb is None:
-            if free_gb is not None and TOTAL_RAM_GB:
-                used_gb = max(0.0, TOTAL_RAM_GB - free_gb)
-
-        # Compose metrics using TOTAL_RAM_GB as the authoritative denominator
-        total_gb = TOTAL_RAM_GB  # may be None if sysctl failed
-        if used_gb is not None:
-            # Use parsed free_gb if available; fall back to total − used only as last resort
-            if free_gb is None and total_gb is not None:
-                free_gb = max(0.0, total_gb - used_gb)
-            sample['mem_used_gb'] = round(used_gb, 2)
-            if free_gb is not None:
-                sample['mem_free_gb'] = round(free_gb, 3)
-            if total_gb is not None:
+        if IS_LINUX:
+            # MiB Mem :  15836.1 total,  12963.9 free,   1538.8 used,  1580.6 buff/cache
+            mem = re.search(
+                r'MiB Mem\s*:\s*([\d.]+)\s+total,\s*([\d.]+)\s+free,\s*([\d.]+)\s+used',
+                block)
+            if mem:
+                total_gb = TOTAL_RAM_GB if TOTAL_RAM_GB else float(mem.group(1)) / 1024
+                used_gb  = float(mem.group(3)) / 1024
+                free_gb  = float(mem.group(2)) / 1024
+                sample['mem_used_gb']  = round(used_gb, 2)
+                sample['mem_free_gb']  = round(free_gb, 3)
                 sample['mem_total_gb'] = round(total_gb, 2)
-                sample['mem_pct'] = round(used_gb / total_gb * 100, 1)
-        elif total_gb is not None:
-            # Could not parse "used"; at least publish total
-            sample['mem_total_gb'] = round(total_gb, 2)
+                if total_gb > 0:
+                    sample['mem_pct'] = round(used_gb / total_gb * 100, 1)
+            elif TOTAL_RAM_GB:
+                sample['mem_total_gb'] = round(TOTAL_RAM_GB, 2)
+        else:
+            # macOS PhysMem line: "14G used, 1898M unused, ..."
+            # Total RAM comes from sysctl at startup (100% reliable).
+            phys_line = next((l for l in block.splitlines() if 'PhysMem' in l), '')
+            sample['_raw_phys_mem'] = phys_line.strip()
+
+            used_gb = None
+
+            # Match the "used" value, explicitly excluding "unused".
+            for pat in [
+                r'PhysMem:\s*([\d.]+\s*[BKMGT])\b',
+                r'(?<![a-z])([\d.]+\s*[BKMGT])\s+used(?![\w])',
+            ]:
+                m = re.search(pat, phys_line, re.IGNORECASE)
+                if m:
+                    candidate = parse_mem_value(m.group(1))
+                    if candidate > 0 and (TOTAL_RAM_GB is None or candidate <= TOTAL_RAM_GB * 1.05):
+                        used_gb = candidate
+                        break
+
+            # Parse "unused" directly — avoids rounding error in top's "used" figure.
+            free_gb = None
+            mf = re.search(r'([\d.]+\s*[BKMGT])\s+unused', phys_line, re.IGNORECASE)
+            if mf:
+                free_gb = parse_mem_value(mf.group(1))
+
+            if used_gb is None:
+                if free_gb is not None and TOTAL_RAM_GB:
+                    used_gb = max(0.0, TOTAL_RAM_GB - free_gb)
+
+            total_gb = TOTAL_RAM_GB
+            if used_gb is not None:
+                if free_gb is None and total_gb is not None:
+                    free_gb = max(0.0, total_gb - used_gb)
+                sample['mem_used_gb'] = round(used_gb, 2)
+                if free_gb is not None:
+                    sample['mem_free_gb'] = round(free_gb, 3)
+                if total_gb is not None:
+                    sample['mem_total_gb'] = round(total_gb, 2)
+                    sample['mem_pct'] = round(used_gb / total_gb * 100, 1)
+            elif total_gb is not None:
+                sample['mem_total_gb'] = round(total_gb, 2)
 
         # ── Parse ALL processes ───────────────────────────────────────────────
-        # Locate the PID header line directly — more robust than relying on
-        # the "Disks:" section separator which can vary between macOS versions.
         all_procs    = []
         claude_procs = []
 
-        header_match = re.search(r'^\s*PID\s+COMMAND', block, re.MULTILINE | re.IGNORECASE)
-        if header_match:
-            lines = block[header_match.end():].strip().splitlines()
-            for line in lines:
-                if not line.strip():
-                    break   # blank line signals end of process table
-                parts = line.split()
-                if len(parts) < 3:
-                    continue
-                try:
-                    pid     = parts[0]
-                    cmd     = parts[1]
-                    cpu_val = float(parts[2])
-                    time_s  = parts[3] if len(parts) > 3 else '-'
-                    mem_str = parts[7] if len(parts) > 7 else '0B'
-                    mem_gb  = parse_mem_value(mem_str)
+        if IS_LINUX:
+            # Linux columns: PID USER PR NI VIRT RES SHR S %CPU %MEM TIME+ COMMAND
+            header_match = re.search(r'^\s*PID\s+USER', block, re.MULTILINE | re.IGNORECASE)
+            if header_match:
+                lines = block[header_match.end():].strip().splitlines()
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    parts = line.split()
+                    if len(parts) < 12:
+                        continue
+                    try:
+                        pid     = parts[0]
+                        cmd     = parts[11]
+                        cpu_val = float(parts[8])
+                        time_s  = parts[10]
+                        mem_gb  = _parse_rss_linux(parts[5])
+                        if mem_gb >= 1:
+                            mem_str = f'{mem_gb:.1f}G'
+                        elif mem_gb * 1024 >= 1:
+                            mem_str = f'{int(mem_gb * 1024)}M'
+                        else:
+                            mem_str = f'{int(mem_gb * 1024 * 1024)}K'
 
-                    proc_entry = {
-                        'pid':     pid,
-                        'cmd':     cmd[:30],
-                        'cpu':     cpu_val,
-                        'time':    time_s,
-                        'mem_gb':  round(mem_gb, 3),
-                        'mem_str': mem_str,
-                    }
-                    all_procs.append(proc_entry)
+                        proc_entry = {
+                            'pid':     pid,
+                            'cmd':     cmd[:30],
+                            'cpu':     cpu_val,
+                            'time':    time_s,
+                            'mem_gb':  round(mem_gb, 3),
+                            'mem_str': mem_str,
+                        }
+                        all_procs.append(proc_entry)
+                        if is_claude_process(cmd):
+                            claude_procs.append(proc_entry)
+                    except (ValueError, IndexError):
+                        pass
+        else:
+            # macOS columns: PID COMMAND %CPU TIME #TH #WQ #PORT MEM ...
+            header_match = re.search(r'^\s*PID\s+COMMAND', block, re.MULTILINE | re.IGNORECASE)
+            if header_match:
+                lines = block[header_match.end():].strip().splitlines()
+                for line in lines:
+                    if not line.strip():
+                        break   # blank line signals end of process table
+                    parts = line.split()
+                    if len(parts) < 3:
+                        continue
+                    try:
+                        pid     = parts[0]
+                        cmd     = parts[1]
+                        cpu_val = float(parts[2])
+                        time_s  = parts[3] if len(parts) > 3 else '-'
+                        mem_str = parts[7] if len(parts) > 7 else '0B'
+                        mem_gb  = parse_mem_value(mem_str)
 
-                    if is_claude_process(cmd):
-                        claude_procs.append(proc_entry)
+                        proc_entry = {
+                            'pid':     pid,
+                            'cmd':     cmd[:30],
+                            'cpu':     cpu_val,
+                            'time':    time_s,
+                            'mem_gb':  round(mem_gb, 3),
+                            'mem_str': mem_str,
+                        }
+                        all_procs.append(proc_entry)
+                        if is_claude_process(cmd):
+                            claude_procs.append(proc_entry)
+                    except (ValueError, IndexError):
+                        pass
 
-                except (ValueError, IndexError):
-                    pass
-
-        # ── Aggregate Claude metrics ──────────────────────────────────────────────
+        # ── Aggregate Claude metrics ──────────────────────────────────────────
         sample['claude_procs']      = sorted(claude_procs, key=lambda x: x['cpu'], reverse=True)
         sample['claude_proc_count'] = len(claude_procs)
         sample['claude_cpu_total']  = round(sum(p['cpu'] for p in claude_procs), 2)
         sample['claude_mem_gb']     = round(sum(p['mem_gb'] for p in claude_procs), 3)
 
-        # Percentage of system CPU consumed by Claude
         if sample.get('cpu_used', 0) > 0:
             sample['claude_cpu_pct_of_system'] = round(
                 sample['claude_cpu_total'] / sample['cpu_used'] * 100, 1)
         else:
             sample['claude_cpu_pct_of_system'] = 0.0
 
-        # Percentage of system RAM consumed by Claude
         if sample.get('mem_total_gb', 0) > 0:
             sample['claude_mem_pct_of_system'] = round(
                 sample['claude_mem_gb'] / sample['mem_total_gb'] * 100, 1)
@@ -312,9 +393,9 @@ def parse_top_output(filepath: str) -> dict:
             samples.append(sample)
 
     return {
-        'samples':        samples,
-        'log_file':       filepath,
-        'sample_count':   len(samples),
+        'samples':           samples,
+        'log_file':          filepath,
+        'sample_count':      len(samples),
         'sample_interval_s': _get_sample_interval(),
     }
 
