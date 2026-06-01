@@ -16,6 +16,14 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
+# Token-consumption collector (reads ~/.claude/projects/**/*.jsonl).
+# Optional: if it fails to import, the dashboard still serves CPU/RAM data.
+try:
+    from tokens import collect_token_usage
+except Exception as _e:                       # pragma: no cover
+    collect_token_usage = None
+    print(f'[server] WARNING: token collector unavailable: {_e}')
+
 IS_LINUX = sys.platform.startswith('linux')
 
 LOG_FILE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.expanduser('~'), 'informe_cpu.txt')
@@ -153,6 +161,17 @@ def is_claude_process(cmd: str) -> bool:
     """True if the process name corresponds to Claude."""
     cmd_lower = cmd.lower()
     return any(kw in cmd_lower for kw in CLAUDE_KEYWORDS)
+
+
+def get_token_usage() -> dict:
+    """Token-consumption summary from Claude Code transcripts (best-effort)."""
+    if collect_token_usage is None:
+        return {'available': False, 'reason': 'collector not loaded'}
+    try:
+        return collect_token_usage(interval_s=_get_sample_interval())
+    except Exception as e:
+        print(f'[server] WARNING: token collection failed: {e}')
+        return {'available': False, 'reason': str(e)}
 
 
 # ── Main parser ───────────────────────────────────────────────────────────────────
@@ -439,6 +458,9 @@ class MonitorHandler(http.server.SimpleHTTPRequestHandler):
                         last['claude_mem_pct_of_system'] = round(
                             last['claude_mem_gb'] / last['mem_total_gb'] * 100, 1)
 
+            # ── Token consumption (from Claude Code transcripts) ──────────────
+            data['tokens'] = get_token_usage()
+
             body = json.dumps(data).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -496,6 +518,32 @@ class MonitorHandler(http.server.SimpleHTTPRequestHandler):
                     s.get('claude_mem_gb', ''),
                     s.get('claude_mem_pct_of_system', ''),
                 ])
+
+            # ── Second section: token consumption time series ─────────────────
+            tok = get_token_usage()
+            if tok.get('available'):
+                tt = tok.get('totals', {})
+                td = tok.get('today', {})
+                writer.writerow([])
+                writer.writerow(['# tokens — cumulative',
+                                 'input', 'output', 'cache_read', 'cache_creation',
+                                 'total', 'cost_usd'])
+                for label, agg in (('all_time', tt), ('today', td)):
+                    writer.writerow([label, agg.get('input', ''), agg.get('output', ''),
+                                     agg.get('cache_read', ''), agg.get('cache_creation', ''),
+                                     agg.get('total', ''), agg.get('cost_usd', '')])
+                writer.writerow([])
+                writer.writerow(['# tokens — today by interval',
+                                 'input', 'output', 'cache_read', 'cache_creation', 'total'])
+                ser = tok.get('series', {})
+                labels = ser.get('labels', [])
+                for i, label in enumerate(labels):
+                    writer.writerow([
+                        label,
+                        ser['input'][i], ser['output'][i], ser['cache_read'][i],
+                        ser['cache_creation'][i], ser['total'][i],
+                    ])
+
             body = buf.getvalue().encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/csv; charset=utf-8')
