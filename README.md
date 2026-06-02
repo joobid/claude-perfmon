@@ -1,8 +1,9 @@
 # Claude Performance Monitor
 
-A lightweight local dashboard that tracks **CPU and RAM consumed by Claude** in real time,
-comparing them against total system resources. Built with a Python HTTP server and a
-single-page HTML dashboard — no external dependencies beyond Python 3.
+A lightweight local dashboard that tracks **CPU, RAM and token consumption by Claude** in
+real time. System resources are compared against the total machine; token usage and
+estimated cost are read from Claude Code's own transcript logs. Built with a Python HTTP
+server and a single-page HTML dashboard — no external dependencies beyond Python 3.
 
 ---
 
@@ -17,6 +18,9 @@ single-page HTML dashboard — no external dependencies beyond Python 3.
   - **Stacked time-series charts** — Claude vs rest-of-system over the full session
   - **CPU donut** — proportional breakdown of Claude / other / idle
   - **Process table** — every Claude subprocess with individual CPU and memory
+  - **Token consumption** — input / output / cache tokens and estimated cost, read from
+    Claude Code's transcripts (`~/.claude/projects/**/*.jsonl`), with a today total, the
+    current 5-hour usage block, and a per-interval time series
 
 ---
 
@@ -40,6 +44,7 @@ start_monitor.sh  [samples] [interval_s]
 | `stop_monitor.sh` | Gracefully stops data collection and the web server |
 | `sampler.py` | Runs `top -l 2 -s N` in a loop; discards the stale init sample; appends only the real delta block to the log |
 | `server.py` | Parses the top log, aggregates Claude processes, augments the latest sample with a real-time `ps ax` snapshot, serves JSON + HTML |
+| `tokens.py` | Reads Claude Code transcripts (`~/.claude/projects/**/*.jsonl`), aggregates token usage and estimated cost; consumed by `server.py` on each `/data` request |
 | `monitor.html` | Self-contained dashboard (Chart.js via CDN) |
 
 ---
@@ -89,7 +94,8 @@ The dashboard is divided into three rows:
 **Top row — live gauges**
 
 - **CPU gauge** (left): Claude's share of active CPU % vs the total, shown as a segmented bar (Claude · Others · Idle) with exact figures below.
-- **RAM gauge** (right): Claude's RAM in GB vs total installed, shown as a segmented bar (Claude · Others · Free).
+- **RAM gauge** (centre): Claude's RAM in GB vs total installed, shown as a segmented bar (Claude · Others · Free).
+- **Tokens gauge** (right): tokens consumed **today** with estimated cost, split into output · input · cache write · cache read, plus the running total for the current 5-hour usage block and time remaining in it.
 
 **Middle row — time-series and breakdown**
 
@@ -121,7 +127,9 @@ The header bar includes a **↓ CSV** button. Clicking it downloads a file named
 | `claude_mem_gb` | Claude RAM (GB) |
 | `claude_mem_pct_of_system` | Claude as % of total RAM |
 
-The same data is also available directly at `http://127.0.0.1:8765/export.csv`.
+The same data is also available directly at `http://127.0.0.1:8765/export.csv`. When token
+data is available, two extra sections are appended to the file: cumulative token totals
+(all-time and today) and today's token time series by interval.
 
 **Quick reference table**
 
@@ -135,6 +143,26 @@ The same data is also available directly at `http://127.0.0.1:8765/export.csv`.
 | **Load average** | System load 1 m / 5 m / 15 m (processes in run queue) |
 | **CPU donut** | Proportional breakdown for the latest sample |
 | **Process table** | All Claude subprocesses — PID, name, CPU %, RAM (live, from `ps`) |
+| **Tokens gauge** | Today's token usage + estimated cost, split by output / input / cache |
+| **Tokens over time** | Stacked area of today's tokens per interval (output / input / cache write / cache read) |
+
+---
+
+## Token consumption and cost
+
+Token figures come from Claude Code's transcript logs in `~/.claude/projects/**/*.jsonl`.
+Each assistant message records a `usage` block (`input_tokens`, `output_tokens`,
+`cache_read_input_tokens`, `cache_creation_input_tokens`) and the `model`. `tokens.py`
+reads these directly — no API calls, no external tools.
+
+- **Token counts are exact.** Streaming duplicates are de-duplicated by message id +
+  request id, the same approach `ccusage` uses.
+- **Cost is an estimate.** It is computed from a per-model price table in `tokens.py`
+  (`PRICES`), matched by model family (opus / sonnet / haiku). Update that table when
+  Anthropic pricing changes. For authoritative billing, cross-check with
+  [`ccusage`](https://github.com/ryoppippi/ccusage) (`npx ccusage@latest`).
+- The **5-hour block** mirrors Claude's usage windows: it starts at the first activity
+  (floored to the hour) and resets after 5 hours or a long idle gap.
 
 ---
 

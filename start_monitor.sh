@@ -1,20 +1,21 @@
 #!/bin/bash
 # =============================================================================
-# start_monitor.sh — CPU/RAM monitoring starter for macOS
+# start_monitor.sh — CPU/RAM monitoring starter (macOS, Linux, WSL)
 #
 # Usage: ./start_monitor.sh [samples] [interval_seconds]
 #
-#   samples          Number of data points to collect  (default: 360)
-#   interval_seconds Seconds between samples            (default: 60)
+#   samples          Number of data points to collect  (default: 960)
+#   interval_seconds Seconds between samples            (default: 30)
 #
 # Examples:
-#   ./start_monitor.sh              # 360 x 60 s = 6 h  (default)
-#   ./start_monitor.sh 720 30       # 720 x 30 s = 6 h, finer resolution
-#   ./start_monitor.sh 720 5        # 720 x  5 s = 1 h, stress-test mode
+#   ./start_monitor.sh              # 960 x 30 s = 8 h  (default)
+#   ./start_monitor.sh 720 10       # 720 x 10 s = 2 h, finer resolution
+#   ./start_monitor.sh 20 10        # 20  x 10 s ≈ 3 min, quick test
 # =============================================================================
 
 SAMPLES="${1:-960}"
 INTERVAL="${2:-30}"
+OS="$(uname -s)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP=$(date +%d%m%y_%H%M%S)
 LOG_DIR="$SCRIPT_DIR/logs"
@@ -29,7 +30,7 @@ GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║     CPU Performance Monitor — macOS          ║${NC}"
+echo -e "${GREEN}║     CPU Performance Monitor                  ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -82,7 +83,13 @@ if kill -0 "$SERVER_PID" 2>/dev/null; then
     echo -e "  Dashboard → ${YELLOW}http://127.0.0.1:${PORT}${NC}"
     echo -e "  To stop → ${YELLOW}./stop_monitor.sh${NC}"
     echo ""
-    open "http://127.0.0.1:${PORT}" 2>/dev/null || true
+    if [[ "$OS" == "Darwin" ]]; then
+        open "http://127.0.0.1:${PORT}" 2>/dev/null || true
+    else
+        # Linux / WSL: try xdg-open (desktop), then cmd.exe (WSL2)
+        xdg-open "http://127.0.0.1:${PORT}" 2>/dev/null || \
+        cmd.exe /c start "http://127.0.0.1:${PORT}" 2>/dev/null || true
+    fi
 else
     echo -e "${RED}✗ Server failed to start. Contents of .server.log:${NC}"
     cat "$SCRIPT_DIR/.server.log"

@@ -64,9 +64,11 @@
   ════════════════════════════════════════ */
   .gauges{
     flex-shrink:0;
-    display:grid;grid-template-columns:1fr 1fr;gap:8px;
+    display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;
     padding:8px 14px 0;
   }
+  /* token gauge value (slightly smaller so big counts fit) */
+  .gv-tok{font-size:26px;font-weight:800;letter-spacing:-1px;color:var(--claude);line-height:1}
   .gauge{
     background:var(--surface);border:1px solid var(--border);border-radius:10px;
     padding:12px 16px 10px;
@@ -116,7 +118,7 @@
     flex:1;min-height:0;
     display:grid;
     grid-template-columns:1fr 1fr 1fr;
-    grid-template-rows:1fr 1fr;
+    grid-template-rows:1fr 1fr 1fr;
     gap:8px;
     padding:8px 14px 10px;
   }
@@ -272,6 +274,35 @@
     </div>
   </div>
 
+  <!-- TOKENS gauge -->
+  <div class="gauge">
+    <div class="gauge-top">
+      <div class="gauge-icon" style="display:flex;align-items:center;gap:4px">🪙 TOKENS
+        <i class="info-icon" data-tip="tokens-gauge">ℹ</i>
+      </div>
+      <div class="gauge-nums">
+        <span class="gv-tok" id="gt-today">—</span>
+        <span class="gv-unit" style="font-size:12px">today</span>
+      </div>
+    </div>
+    <div class="gauge-pct">
+      Est. cost today <strong id="gt-cost">—</strong> &nbsp;·&nbsp;
+      <span id="gt-block" style="color:var(--muted)">5h block —</span>
+    </div>
+    <div class="bar-track" id="tok-bar">
+      <div class="seg-c" id="tok-seg-out" style="width:0%;background:var(--claude)"></div>
+      <div class="seg-o" id="tok-seg-in"  style="width:0%;background:#d29922"></div>
+      <div class="seg-o" id="tok-seg-cw"  style="width:0%;background:#a371f7"></div>
+      <div class="seg-o" id="tok-seg-cr"  style="width:0%;background:var(--other)"></div>
+    </div>
+    <div class="gauge-legend">
+      <div class="leg"><div class="leg-dot" style="background:var(--claude)"></div>Output <span class="leg-val" id="gl-out">—</span></div>
+      <div class="leg"><div class="leg-dot" style="background:#d29922"></div>Input <span class="leg-val" id="gl-in">—</span></div>
+      <div class="leg"><div class="leg-dot" style="background:#a371f7"></div>Cache write <span class="leg-val" id="gl-cw">—</span></div>
+      <div class="leg"><div class="leg-dot" style="background:var(--other)"></div>Cache read <span class="leg-val" id="gl-cr">—</span></div>
+    </div>
+  </div>
+
 </div>
 
 <!-- CHARTS -->
@@ -322,6 +353,12 @@
     <div class="tbl-b" id="tbl-body">
       <div class="empty">Waiting for first sample…</div>
     </div>
+  </div>
+
+  <!-- Tokens over time (full width) -->
+  <div class="card" style="grid-column:1/4;grid-row:3">
+    <div class="ch"><span class="ct">🪙 Tokens over time</span><i class="info-icon" data-tip="tokens-time">ℹ</i><span class="cs">today — per interval, stacked</span></div>
+    <div class="cb"><canvas id="tokenChart"></canvas></div>
   </div>
 
 </div>
@@ -453,8 +490,40 @@ const donutChart = new Chart(document.getElementById('donutChart'),{
   }
 });
 
+// Stacked area — Tokens per interval (today)
+const tokenChart = new Chart(document.getElementById('tokenChart'),{
+  type:'line',
+  data:{ labels:[], datasets:[
+    { label:'Output',      data:[], borderColor:'#e0825a', backgroundColor:'rgba(224,130,90,.55)', fill:'origin', tension:.3, pointRadius:0, borderWidth:1.2, order:1 },
+    { label:'Input',       data:[], borderColor:'#d29922', backgroundColor:'rgba(210,153,34,.45)', fill:'-1', tension:.3, pointRadius:0, borderWidth:1.2, order:2 },
+    { label:'Cache write', data:[], borderColor:'#a371f7', backgroundColor:'rgba(163,113,247,.40)', fill:'-1', tension:.3, pointRadius:0, borderWidth:1.2, order:3 },
+    { label:'Cache read',  data:[], borderColor:'#4f8ef7', backgroundColor:'rgba(79,142,247,.30)', fill:'-1', tension:.3, pointRadius:0, borderWidth:1.2, order:4 },
+  ]},
+  options:{
+    responsive:true, maintainAspectRatio:false, animation:{duration:300},
+    interaction:{mode:'index',intersect:false},
+    plugins:{
+      legend:LEGEND,
+      tooltip:{ backgroundColor:'#161b22', borderColor:'#30363d', borderWidth:1,
+        titleColor:'#e6edf3', bodyColor:'#7d8590', padding:7,
+        callbacks:{ label: c => ` ${c.dataset.label}: ${fmtTok(c.parsed.y)}` } },
+      datalabels:{display:false}
+    },
+    scales:{ ...AX, y:{ ...AX.y, ticks:{ font:{size:9}, callback:v=>fmtTok(v) } } }
+  }
+});
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 function set(id, v)   { const e=document.getElementById(id); if(e) e.textContent = v??'—' }
+// Compact token formatter: 1234 → 1.2K, 4_500_000 → 4.5M
+function fmtTok(n){
+  n = +n||0;
+  if(n>=1e9) return (n/1e9).toFixed(2)+'B';
+  if(n>=1e6) return (n/1e6).toFixed(2)+'M';
+  if(n>=1e3) return (n/1e3).toFixed(1)+'K';
+  return String(Math.round(n));
+}
+function fmtUsd(n){ return n!=null ? '$'+(+n).toFixed(2) : '—' }
 function fmt(v, d)    { return v!=null ? (+v).toFixed(d) : '—' }
 function pct(id, w)   { const e=document.getElementById(id); if(e) e.style.width = Math.min(100,Math.max(0,w))+'%' }
 function upd(ch, L, arrs){ ch.data.labels=L; arrs.forEach((a,i)=>ch.data.datasets[i].data=a); ch.update('active') }
@@ -533,8 +602,44 @@ function render(data){
     console.log('[mem_used_gb]', last.mem_used_gb, '[mem_total_gb]', last.mem_total_gb);
   }
 
+  // ── Tokens ─────────────────────────────────────────────────────────────
+  renderTokens(data.tokens);
+
   // ── Table ──────────────────────────────────────────────────────────────
   renderTable(last.claude_procs||[], last);
+}
+
+function renderTokens(tok){
+  if(!tok || !tok.available){
+    set('gt-today','n/a'); set('gt-cost','—'); set('gt-block','5h block —');
+    return;
+  }
+  const td = tok.today||{}, bl = tok.block_5h||{};
+  set('gt-today', fmtTok(td.total));
+  set('gt-cost',  fmtUsd(td.cost_usd));
+  const blk = bl.remaining_min!=null
+    ? `5h block ${fmtTok(bl.total)} · ${bl.remaining_min}m left`
+    : `5h block ${fmtTok(bl.total||0)}`;
+  set('gt-block', blk);
+
+  // Legend values
+  set('gl-out', fmtTok(td.output));
+  set('gl-in',  fmtTok(td.input));
+  set('gl-cw',  fmtTok(td.cache_creation));
+  set('gl-cr',  fmtTok(td.cache_read));
+
+  // Segmented bar (share of today's total)
+  const tot = td.total||0;
+  pct('tok-seg-out', tot>0 ? td.output/tot*100 : 0);
+  pct('tok-seg-in',  tot>0 ? td.input/tot*100 : 0);
+  pct('tok-seg-cw',  tot>0 ? td.cache_creation/tot*100 : 0);
+  pct('tok-seg-cr',  tot>0 ? td.cache_read/tot*100 : 0);
+
+  // Time series (today, per interval)
+  const ser = tok.series||{labels:[]};
+  upd(tokenChart, ser.labels||[], [
+    ser.output||[], ser.input||[], ser.cache_creation||[], ser.cache_read||[],
+  ]);
 }
 
 function renderTable(procs, last){
@@ -651,6 +756,21 @@ const TIPS = {
     not limited to the last top sample interval.
     Shows PID, process name, CPU%, and resident memory (RSS).
     <span class="tip-tag">source: ps ax — live</span>`,
+
+  'tokens-gauge': `<b>Tokens — gauge</b>
+    Token consumption today, read from Claude Code's transcripts
+    (<code>~/.claude/projects/**/*.jsonl</code>).
+    The bar splits today's total into <b style="color:var(--claude)">output</b> ·
+    <b style="color:#d29922">input</b> · <b style="color:#a371f7">cache write</b> ·
+    <b style="color:var(--other)">cache read</b>.
+    Cost is an <em>estimate</em> from a per-model price table — token counts are exact.
+    <span class="tip-tag">source: transcript usage blocks</span>`,
+
+  'tokens-time': `<b>Tokens over time</b>
+    Stacked area of today's token usage, bucketed by the sampling interval.
+    Same colour key as the gauge. Useful to spot bursts and which token type
+    (output vs cache) drives consumption.
+    <span class="tip-tag">source: transcript usage blocks</span>`,
 };
 
 (function initTips(){
